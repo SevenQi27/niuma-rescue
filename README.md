@@ -1,4 +1,111 @@
-# 牛马自救中心 (niuma)
+# niuma — an AI agent orchestration daemon
+
+**Drop a requirement into Feishu (Lark). Agents clarify, develop, test and deliver it.**
+
+niuma is a single-binary Go daemon that turns Feishu IM into the front-end of a
+multi-stage AI development pipeline. It listens for requirements over a long
+connection, tracks them through a validated state machine backed by Feishu Base
+(Bitable), and drives CLI coding agents — **Cursor / Claude Code / Codex /
+Gemini** — through clarification → development → review → delivery, with
+explicit human gates at every decision point.
+
+Built because I use it daily: it runs my own backlog.
+
+<!-- TODO: 30s demo GIF here — send a requirement in Feishu, watch the agent deliver -->
+
+## How it works
+
+```
+Feishu IM ──long conn──▶ niuma (single process)
+                          ├─ message/card callbacks → router → Feishu Base records
+                          ├─ dispatcher (goroutines) → per-stage CLI agent calls
+                          └─ git worktree / inline edits → review gate → status,
+                             logs and alert cards pushed back to Feishu
+```
+
+**Pipeline states** (human gates in bold):
+requirement pool → **multi-select intake** → auto-clarification (parallel, produces
+PRD or follow-up questions) → **PRD confirmation** → dev queue → **batch start** →
+agent development → **merge/review** → done. Illegal transitions are rejected by
+a whitelist (`ValidTransitions`), so a record can never skip a human gate.
+
+## Features
+
+- **Requirement pool with batch intake** — incoming requirements accumulate;
+  one multi-select card confirms which to run
+- **Parallel auto-clarification** — each requirement gets a PRD draft or
+  follow-up questions before any code is written
+- **Batch development** — multiple requirements targeting the same workspace
+  are merged into a *single* agent call (fewer context switches, lower token cost)
+- **Two execution modes** — `inline` (edit the target repo's working tree,
+  human commits) or `worktree` (isolated directory/branch per requirement,
+  auto push + PR/MR)
+- **Reliability layer** — SQLite-backed execution leases with heartbeats and
+  crash recovery, exponential retry with a failure ceiling, hung-agent watchdog,
+  blocked-state alert cards
+- **Feishu commands** — kanban, health, stats, weekly report, retry, unblock…
+- **ZenTao integration** — import bugs from ZenTao (incl. v12 token auth) into
+  the same pipeline
+
+## Design decisions
+
+**Single process, single static binary.** The orchestrator's job is I/O
+coordination, not computation — one Go process with goroutines replaces the
+earlier multi-service Python version. Deployment is `scp + run`; state lives in
+SQLite and Feishu Base, so the binary itself is disposable.
+
+**Feishu Base as the source of truth, SQLite as the execution ledger.**
+Requirement status must be visible and editable by humans, so it lives in a
+Bitable the whole team can open. What Bitable can't provide — execution locks,
+dedup, retry bookkeeping — lives in a local SQLite ledger: a `claim/lease`
+table (owner pid, heartbeat, `next_retry_at`, attempt count) makes crashed runs
+reclaimable, and an inbox table with a unique `event_key` deduplicates Feishu
+event redelivery.
+
+**A validated state machine instead of free-form status.** Every transition is
+checked against a whitelist; anything else is an error. Combined with the five
+human gates, this is what makes an *autonomous* pipeline safe to point at real
+repositories: the machine can only move along edges a human already approved.
+
+**Heterogeneous agents behind one interface.** Each CLI agent speaks a
+different dialect (Cursor emits `stream-json` events; others emit raw text) and
+fails differently (auth expiry, rate limits, workspace-trust prompts). A `sink`
+abstraction normalizes output streams, and per-engine error-marker tables
+classify failures into *retryable* vs *needs-human*, so retry policy is uniform
+across engines.
+
+**Three-level concurrency control.** A global semaphore caps parallel agent
+runs; a git mutex serializes worktree surgery on the shared base repo; lazy
+per-workspace locks ensure inline mode never runs two batches in one working
+tree. Coarse enough to reason about, fine enough to keep unrelated workspaces
+fully parallel.
+
+**Humans decide, agents execute.** Every irreversible step — which requirements
+to run, whether a PRD is right, when a batch starts, whether the diff merges —
+is a card in Feishu waiting for a tap. The pipeline's throughput comes from
+automating everything *between* those taps, not from removing them.
+
+## Quick start
+
+```bash
+cd go
+GOPROXY=https://goproxy.cn,direct go build -o niuma .
+# reuse .env from the parent dir (Feishu credentials / Base / repo paths), see .env.example
+./niuma
+```
+
+Full setup from a fresh clone (prerequisites, Feishu Base fields and status
+options, running as a service) → [go/README.md](go/README.md).
+Feishu app permissions and event subscriptions → [docs/feishu-app-setup.md](docs/feishu-app-setup.md).
+Multi-workspace / SCM config → `workspaces.example.json`.
+
+## License
+
+See [LICENSE](LICENSE).
+
+---
+
+# 牛马自救中心 (niuma) · 中文说明
 
 把需求丢进飞书，让 Agent 替你加班。
 
@@ -7,17 +114,6 @@
 
 > **本仓库已是 Go 实现**（单进程、单静态二进制）。早期 Python 版的完整历史保留在 `main` 分支与
 > git 历史中；当前代码全部在 [`go/`](go/)。
-
-## 快速开始
-
-```bash
-cd go
-GOPROXY=https://goproxy.cn,direct go build -o niuma .
-# 复用同目录上层的 .env（飞书凭据 / Base / 仓库路径），见 .env.example
-./niuma
-```
-
-**从零克隆后的完整运行步骤（前置条件 / 飞书 Base 字段与状态选项 / 装成常驻服务）见 → [go/README.md](go/README.md)。**
 
 ## 它能做什么
 
@@ -29,16 +125,9 @@ GOPROXY=https://goproxy.cn,direct go build -o niuma .
 - agent 瞬时网络错自动重试、卡死看门狗、阻塞主动告警卡片
 - 默认 **inline 模式**（所有需求在目标仓库当前工作树上改、人工决定提交）；也可按工作区切 `worktree`（各自独立目录/分支、自动 push/PR/MR）。本地 SQLite 记录执行锁/去重/重试
 
-## 架构
+## 人工卡点
 
-```
-飞书 IM ──长连接──▶ niuma（单进程）
-                     ├─ 收消息/卡片回调 → message router → 飞书 Base 记录
-                     ├─ 调度器（goroutine 并发）→ 各阶段调 CLI Agent
-                     └─ git worktree + 验收门 + Review → 回写飞书状态/日志/通知
-```
-
-人工卡点：`待选择`（需求池多选）· `待回答`（补充信息）· `待确认`（确认 PRD）· `待开发`（攒批后点「开始开发本批」）· `待合并`（做 Review / 标记完成）。
+`待选择`（需求池多选）· `待回答`（补充信息）· `待确认`（确认 PRD）· `待开发`（攒批后点「开始开发本批」）· `待合并`（做 Review / 标记完成）。
 
 ## 配置
 
@@ -46,7 +135,3 @@ GOPROXY=https://goproxy.cn,direct go build -o niuma .
 多工作区 / SCM 见 `workspaces.example.json`。飞书应用权限与事件订阅见 [docs/feishu-app-setup.md](docs/feishu-app-setup.md)。
 
 > 注：`docs/` 下其余文档为早期 Python 版部署说明，正在迁移；以 [go/README.md](go/README.md) 为准。
-
-## License
-
-见 [LICENSE](LICENSE)。
