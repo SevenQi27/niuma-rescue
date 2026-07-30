@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-var intakeRe = regexp.MustCompile(`^需求(?:\s*@([A-Za-z][\w -]*))?\s*[：:]?\s*([\s\S]*)$`)
+var intakeRe = regexp.MustCompile(`^(需求|(?i:bug)|缺陷)(?:\s*@([A-Za-z][\w -]*))?\s*[：:]?\s*([\s\S]*)$`)
 var spaceRe = regexp.MustCompile(`\s+`)
 
 var commandHelp = `可用指令：
@@ -21,25 +21,41 @@ var commandHelp = `可用指令：
 切换工作区 <workspace>
 设置状态 <状态>
 
-新需求格式：
+新任务格式：
 需求：修改登录页按钮样式
-  发完会先停在「待选择」，选好 Agent/工作区点「开始澄清」才开跑（PIPELINE_SETUP_GATE=0 可关）。`
+Bug@cursor：登录接口偶发 500
+  发完会先停在「待选择」，选好 Agent/工作区点开始按钮才开跑（PIPELINE_SETUP_GATE=0 可关）。`
 
 var activeStatuses = map[string]bool{
 	SSetup: true, SClarify: true, SAnswer: true, SConfirm: true,
-	SDevReady: true, SDev: true, SReview: true, SMerge: true, SBlocked: true,
+	SDevReady: true, SDev: true, SBug: true, SReview: true, SMerge: true, SBlocked: true,
 }
 
-func parseIntake(text string) (body, agent, wsKey string, ok bool) {
+func parseIntake(text string) (body, agent, wsKey, taskType string, ok bool) {
 	m := intakeRe.FindStringSubmatch(text)
 	if m == nil {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
-	body = strings.Trim(strings.TrimSpace(m[2]), "：: ")
+	body = strings.Trim(strings.TrimSpace(m[3]), "：: ")
 	body, wsKey = parseWorkspaceToken(body)
 	body = strings.Trim(strings.TrimSpace(body), "：: ")
-	agent = normalizeAgent(m[1])
-	return body, agent, wsKey, true
+	agent = normalizeAgent(m[2])
+	taskType = TaskRequirement
+	if strings.EqualFold(m[1], "bug") || m[1] == "缺陷" {
+		taskType = TaskBug
+	}
+	return body, agent, wsKey, taskType, true
+}
+
+func isBugRecord(rec *Record) bool {
+	return rec != nil && strings.EqualFold(fieldText(rec.Fields[FTaskType]), TaskBug)
+}
+
+func startStatus(rec *Record) string {
+	if isBugRecord(rec) {
+		return SBug
+	}
+	return SClarify
 }
 
 func findActive(records []Record, chatID string) *Record {
@@ -152,13 +168,18 @@ func (a *App) handleCommand(text, chatID string, records []Record) (bool, bool) 
 		}
 		a.sendCardOrText(chatID, statusCard(rec), "状态："+fieldText(rec.Fields[FStatus]))
 		return true, false
-	case "开始澄清", "开始", "go":
+	case "开始澄清", "开始修复", "开始", "go":
 		rec := findRecordStatus(records, chatID, map[string]bool{SSetup: true})
 		if rec == nil {
 			return false, false // 不在待选择语境 → 交给后续
 		}
-		a.fs.updateRecord(rec.RecordID, map[string]any{FStatus: SClarify})
-		a.fs.sendText(chatID, "🚀 开始澄清。")
+		next := startStatus(rec)
+		a.fs.updateRecord(rec.RecordID, map[string]any{FStatus: next})
+		if next == SBug {
+			a.fs.sendText(chatID, "🐛 开始调查并修复 Bug。")
+		} else {
+			a.fs.sendText(chatID, "🚀 开始澄清。")
+		}
 		return true, true
 	case "开始开发", "开跑":
 		rec := findRecordStatus(records, chatID, map[string]bool{SDevReady: true})
@@ -204,6 +225,9 @@ func (a *App) handleCommand(text, chatID string, records []Record) (bool, bool) 
 			break
 		}
 		target := SDev
+		if isBugRecord(rec) {
+			target = SBug
+		}
 		if f := strings.Fields(n); len(f) == 2 {
 			target = f[1]
 		}
@@ -249,13 +273,17 @@ func (a *App) handleCommand(text, chatID string, records []Record) (bool, bool) 
 }
 
 var agentCmdRe = regexp.MustCompile(`^(?:切换|设置)(澄清|开发|Review|review)?Agent (.+)$`)
-var statusCmdRe = regexp.MustCompile(`^设置状态 (待选择|待澄清|待回答|待确认|待开发|开发中|Review中|待合并|完成|已阻塞)$`)
+var statusCmdRe = regexp.MustCompile(`^设置状态 (待选择|待澄清|待回答|待确认|待开发|开发中|Bug处理中|Review中|待合并|完成|已阻塞)$`)
 
 func (a *App) appendClarify(rec *Record, answer string) {
 	merged := strings.TrimSpace(fieldText(rec.Fields[FClarify]) + "\n\n【回答】" + answer)
-	a.fs.updateRecord(rec.RecordID, map[string]any{FClarify: merged, FStatus: SClarify})
+	next := SClarify
+	if isBugRecord(rec) {
+		next = SBug
+	}
+	a.fs.updateRecord(rec.RecordID, map[string]any{FClarify: merged, FStatus: next})
 	rec.Fields[FClarify] = merged
-	rec.Fields[FStatus] = SClarify
+	rec.Fields[FStatus] = next
 }
 
 // handleMessage 处理一条飞书文本消息。返回 true 表示进入"机器该处理"的状态，需触发 dispatch。
@@ -307,14 +335,15 @@ func (a *App) handleMessage(msg map[string]any) bool {
 		return false
 	}
 	// 新需求
-	body, agent, wsKey, ok := parseIntake(text)
+	body, agent, wsKey, taskType, ok := parseIntake(text)
 	if !ok {
-		a.fs.sendText(chatID, "发「需求：<一句话描述>」给我，就能提交一个新需求开始走流水线。")
+		a.fs.sendText(chatID, "发「需求：<描述>」或「Bug@codex：<现象>」给我，就能提交任务开始走流水线。")
 		return false
 	}
 	// 幂等：同会话+同描述已有在途记录 → 跳过
 	for _, r := range records {
-		if fieldText(r.Fields[FChat]) == chatID && fieldText(r.Fields[FDesc]) == body {
+		if fieldText(r.Fields[FChat]) == chatID && fieldText(r.Fields[FDesc]) == body &&
+			orDefault(fieldText(r.Fields[FTaskType]), TaskRequirement) == taskType {
 			st := fieldText(r.Fields[FStatus])
 			if st != SDone && st != SBlocked {
 				return false
@@ -324,17 +353,24 @@ func (a *App) handleMessage(msg map[string]any) bool {
 	a.fs.sendText(chatID, "✅ 收到需求，正在准备…")
 	gated := cfg.SetupGate
 	status := SClarify
+	if taskType == TaskBug {
+		status = SBug
+	}
 	if gated {
 		status = SSetup
 	}
-	fields := map[string]any{FTitle: trunc(body, 30), FDesc: body, FStatus: status, FChat: chatID}
+	fields := map[string]any{FTitle: trunc(body, 30), FDesc: body, FStatus: status, FChat: chatID, FTaskType: taskType}
 	if sender != "" {
 		fields[FOwner] = []map[string]string{{"id": sender}}
 	}
 	if wsKey != "" {
 		fields[FWorkspace] = wsKey
 	}
-	if agent != "" {
+	if taskType == TaskBug {
+		fix, review := bugAgentPair(agent, cfg.EngineBugFix, cfg.EngineBugReview)
+		fields[FAgentCode] = fix
+		fields[FAgentReview] = review
+	} else if agent != "" {
 		fields[FAgent] = agent
 	}
 	created, err := a.fs.createRecord(fields)
@@ -355,7 +391,11 @@ func (a *App) handleMessage(msg map[string]any) bool {
 		a.sendCardOrText(chatID, backlogCard(pool), backlogText(pool))
 		return false
 	}
-	a.fs.sendText(chatID, "🔍 已收到，正在澄清需求…")
+	if taskType == TaskBug {
+		a.fs.sendText(chatID, "🐛 已收到，正在创建隔离工作树并调查 Bug…")
+	} else {
+		a.fs.sendText(chatID, "🔍 已收到，正在澄清需求…")
+	}
 	return true
 }
 
@@ -386,11 +426,15 @@ func (a *App) confirmBacklog(value map[string]any, records []Record) (string, bo
 		if r == nil || fieldText(r.Fields[FStatus]) != SSetup {
 			continue
 		}
-		fields := map[string]any{FStatus: SClarify}
+		fields := map[string]any{FStatus: startStatus(r)}
 		if wsKey != "" {
 			fields[FWorkspace] = wsKey
 		}
-		if agent != "" {
+		if isBugRecord(r) {
+			fix, review := bugAgentPair(agent, cfg.EngineBugFix, cfg.EngineBugReview)
+			fields[FAgentCode] = fix
+			fields[FAgentReview] = review
+		} else if agent != "" {
 			fields[FAgent] = agent
 		}
 		if err := a.fs.updateRecord(id, fields); err == nil {
@@ -408,7 +452,7 @@ func (a *App) confirmBacklog(value map[string]any, records []Record) (string, bo
 	if agent != "" {
 		extra += " · Agent=" + agent
 	}
-	note := "已进入澄清流程" + extra + "，完成后会同步进度。未选的仍留在需求池。\n\n本批：" + strings.Join(titles, " / ")
+	note := "已进入处理流程" + extra + "，完成后会同步进度。未选的仍留在任务池。\n\n本批：" + strings.Join(titles, " / ")
 	return "🚀 已开始 " + itoa(n) + " 个需求", true, card2Note("🚀 已开始 "+itoa(n)+" 个需求", note, "green")
 }
 
@@ -497,6 +541,9 @@ func (a *App) handleCardAction(value map[string]any) (string, bool, map[string]a
 		if status != SMerge {
 			return "当前状态「" + status + "」，无法发起 Review", false, nil
 		}
+		if isBugRecord(rec) {
+			return "Bug 已经过独立 Agent Review；请人工检查并合并，无需重复走需求 Review。", false, nil
+		}
 		a.fs.updateRecord(rid, map[string]any{FStatus: SReview})
 		agent := orDefault(fieldText(rec.Fields[FAgentReview]), orDefault(fieldText(rec.Fields[FAgent]), cfg.EngineReview))
 		return "🔍 已发起 Review", true, doneToastCard("🔍 开始 Review："+title, "将用 "+agent+" 审查当前工作区改动，请稍候。", "wathet")
@@ -504,9 +551,14 @@ func (a *App) handleCardAction(value map[string]any) (string, bool, map[string]a
 		if status != SSetup {
 			return "当前状态「" + status + "」，无需开始澄清", false, nil
 		}
-		a.fs.updateRecord(rid, map[string]any{FStatus: SClarify})
-		agent := orDefault(fieldText(rec.Fields[FAgent]), cfg.EngineClarify)
+		next := startStatus(rec)
+		a.fs.updateRecord(rid, map[string]any{FStatus: next})
 		ws := orDefault(fieldText(rec.Fields[FWorkspace]), "默认")
+		if next == SBug {
+			fix, review := bugAgentPair(fieldText(rec.Fields[FAgentCode]), cfg.EngineBugFix, cfg.EngineBugReview)
+			return "🐛 开始修复", true, doneToastCard("🐛 开始修复："+title, "将用 "+fix+" 修复、"+review+" Review，并在工作区 "+ws+" 创建隔离 worktree。", "purple")
+		}
+		agent := orDefault(fieldText(rec.Fields[FAgent]), cfg.EngineClarify)
 		return "🚀 开始澄清", true, doneToastCard("🚀 开始澄清："+title, "将用 "+agent+" 在工作区 "+ws+" 澄清，请稍候。", "wathet")
 	case "open_settings":
 		return "打开配置", false, settingsCard(rec, workspaceKeys())
@@ -523,7 +575,13 @@ func (a *App) handleCardAction(value map[string]any) (string, bool, map[string]a
 	// 恢复类
 	ops := map[string]func(*Record) opResult{
 		"retry": a.retryRecord, "clear_lock": a.clearLock, "restart_clarify": a.restartClarify,
-		"unblock_dev": func(r *Record) opResult { return a.unblockRecord(r, SDev) }, "mark_done": a.markDone,
+		"unblock_dev": func(r *Record) opResult {
+			target := SDev
+			if isBugRecord(r) {
+				target = SBug
+			}
+			return a.unblockRecord(r, target)
+		}, "mark_done": a.markDone,
 	}
 	if fn, ok := ops[action]; ok {
 		r := fn(rec)

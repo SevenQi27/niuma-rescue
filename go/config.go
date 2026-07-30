@@ -26,6 +26,12 @@ const (
 	FAgentClarify = "澄清Agent"
 	FAgentCode    = "开发Agent"
 	FAgentReview  = "ReviewAgent"
+	FTaskType     = "任务类型"
+)
+
+const (
+	TaskRequirement = "需求"
+	TaskBug         = "Bug"
 )
 
 // 状态值（单选选项）。
@@ -36,25 +42,27 @@ const (
 	SConfirm  = "待确认"
 	SDevReady = "待开发" // 已确认、排队等整批开发的队列状态（不自动跑，等人点「开始开发本批」）
 	SDev      = "开发中"
+	SBug      = "Bug处理中"
 	SReview   = "Review中"
 	SMerge    = "待合并"
 	SDone     = "完成"
 	SBlocked  = "已阻塞"
 )
 
-// dispatcher 只处理这三个；其余是人工卡点或终态。
-var Actionable = map[string]bool{SClarify: true, SDev: true, SReview: true}
+// dispatcher 只处理这些状态；其余是人工卡点或终态。
+var Actionable = map[string]bool{SClarify: true, SDev: true, SBug: true, SReview: true}
 
 // 等待人在飞书里输入的状态。
 var HumanInput = map[string]bool{SAnswer: true, SConfirm: true}
 
 // dispatcher 允许自动推进的状态边。
 var ValidTransitions = map[string]map[string]bool{
-	SSetup:    {SClarify: true},
+	SSetup:    {SClarify: true, SBug: true},
 	SClarify:  {SAnswer: true, SConfirm: true, SBlocked: true},
 	SConfirm:  {SDevReady: true, SBlocked: true},             // 确认 → 进「待开发」队列
 	SDevReady: {SDev: true, SBlocked: true},                  // 人点「开始开发本批」→ 开发中
 	SDev:      {SReview: true, SMerge: true, SBlocked: true}, // SMerge：inline 开发完停靠，待人决定 Review
+	SBug:      {SAnswer: true, SMerge: true, SBlocked: true},
 	SReview:   {SDev: true, SMerge: true, SBlocked: true},
 	SMerge:    {SReview: true}, // 人点「做 Review」从待合并回到 Review
 }
@@ -93,8 +101,10 @@ type Config struct {
 	RepoPath, BaseRef                       string
 	GHRepo, TestCmd                         string
 	EngineClarify, EngineCode, EngineReview string
+	EngineBugFix, EngineBugReview           string
 
 	TimeoutClarify, TimeoutCode, TimeoutReview          int
+	TimeoutBug, BugRepairLimit                          int
 	Inactivity, ProgressInterval, StaleAfter, RetryBase int
 	FailureLimit, PollInterval, MaxConcurrency          int
 	AgentRetries, AgentRunsKeep                         int
@@ -102,6 +112,7 @@ type Config struct {
 	BatchDevelop, BatchClarify, InlineSkipGate          bool
 
 	Root, StateDir, WorktreeBase, WorkspacesFile string
+	BugGraphPython, BugGraphDir                  string
 }
 
 var cfg *Config
@@ -120,13 +131,17 @@ func loadConfig() *Config {
 		GHRepo:    os.Getenv("PIPELINE_GH_REPO"),
 		TestCmd:   os.Getenv("PIPELINE_TEST_CMD"),
 
-		EngineClarify: envText("PIPELINE_ENGINE_CLARIFY", "cursor"),
-		EngineCode:    envText("PIPELINE_ENGINE_CODE", "cursor"),
-		EngineReview:  envText("PIPELINE_ENGINE_REVIEW", "gemini"),
+		EngineClarify:   envText("PIPELINE_ENGINE_CLARIFY", "cursor"),
+		EngineCode:      envText("PIPELINE_ENGINE_CODE", "cursor"),
+		EngineReview:    envText("PIPELINE_ENGINE_REVIEW", "gemini"),
+		EngineBugFix:    envText("PIPELINE_ENGINE_BUG_FIX", "codex"),
+		EngineBugReview: envText("PIPELINE_ENGINE_BUG_REVIEW", "cursor"),
 
 		TimeoutClarify:   envInt("PIPELINE_TIMEOUT_CLARIFY", 600),
 		TimeoutCode:      envInt("PIPELINE_TIMEOUT_CODE", 1800),
 		TimeoutReview:    envInt("PIPELINE_TIMEOUT_REVIEW", 900),
+		TimeoutBug:       envInt("PIPELINE_TIMEOUT_BUG", 10800),
+		BugRepairLimit:   envInt("PIPELINE_BUG_REPAIR_LIMIT", 2),
 		Inactivity:       envInt("PIPELINE_INACTIVITY_TIMEOUT", 120),
 		ProgressInterval: envInt("PIPELINE_PROGRESS_INTERVAL", 20),
 		StaleAfter:       envInt("PIPELINE_EXECUTION_STALE_AFTER", 600),
@@ -151,6 +166,8 @@ func loadConfig() *Config {
 	c.StateDir = envText("PIPELINE_STATE_DIR", filepath.Join(root, "state"))
 	c.WorktreeBase = envText("PIPELINE_WORKTREE_BASE", filepath.Join(root, "worktrees"))
 	c.WorkspacesFile = envText("PIPELINE_WORKSPACES_FILE", filepath.Join(root, "workspaces.json"))
+	c.BugGraphPython = envText("PIPELINE_BUG_GRAPH_PYTHON", defaultBugGraphPython(root))
+	c.BugGraphDir = envText("PIPELINE_BUG_GRAPH_DIR", filepath.Join(root, "buggraph"))
 	if ce := os.Getenv("PIPELINE_CODE_EXTS"); strings.TrimSpace(ce) != "" {
 		var exts []string
 		for _, e := range strings.Split(ce, ",") {
@@ -165,6 +182,18 @@ func loadConfig() *Config {
 	return c
 }
 
+func defaultBugGraphPython(root string) string {
+	for _, candidate := range []string{
+		filepath.Join(root, "buggraph", ".venv", "bin", "python"),
+		filepath.Join(root, "buggraph", ".venv", "Scripts", "python.exe"),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return "python3"
+}
+
 func (c *Config) agentTimeout() int {
 	m := c.TimeoutClarify
 	if c.TimeoutCode > m {
@@ -172,6 +201,9 @@ func (c *Config) agentTimeout() int {
 	}
 	if c.TimeoutReview > m {
 		m = c.TimeoutReview
+	}
+	if c.TimeoutBug > m {
+		m = c.TimeoutBug
 	}
 	return m
 }
@@ -189,6 +221,22 @@ func (c *Config) validate() error {
 	}
 	if len(missing) > 0 {
 		return errf("缺少必填配置 %v：在 .env 设置（参考 .env.example）", missing)
+	}
+	return nil
+}
+
+func (c *Config) validateSchemaCommand() error {
+	var missing []string
+	for name, value := range map[string]string{
+		"FEISHU_APP_ID": c.AppID, "FEISHU_APP_SECRET": c.AppSecret,
+		"PIPELINE_BASE_TOKEN": c.BaseToken, "PIPELINE_TABLE_ID": c.TableID,
+	} {
+		if value == "" {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return errf("缺少 Base schema 配置 %v", missing)
 	}
 	return nil
 }

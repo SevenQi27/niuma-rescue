@@ -8,14 +8,14 @@ import (
 
 var templateStatus = map[string]string{
 	SSetup: "turquoise", SClarify: "wathet", SAnswer: "yellow", SConfirm: "blue",
-	SDevReady: "orange", SDev: "purple", SReview: "indigo", SMerge: "green", SDone: "green", SBlocked: "red",
+	SDevReady: "orange", SDev: "purple", SBug: "purple", SReview: "indigo", SMerge: "green", SDone: "green", SBlocked: "red",
 }
 var statusEmoji = map[string]string{
 	SSetup: "🎛", SClarify: "🔍", SAnswer: "💬", SConfirm: "📋",
-	SDevReady: "📦", SDev: "🔧", SReview: "🔎", SMerge: "🚀", SDone: "✔️", SBlocked: "🚫",
+	SDevReady: "📦", SDev: "🔧", SBug: "🐛", SReview: "🔎", SMerge: "🚀", SDone: "✔️", SBlocked: "🚫",
 }
 var boardOrder = map[string]int{
-	SBlocked: 0, SSetup: 1, SConfirm: 2, SDevReady: 3, SMerge: 4, SAnswer: 5, SClarify: 6, SDev: 7, SReview: 8,
+	SBlocked: 0, SSetup: 1, SConfirm: 2, SDevReady: 3, SMerge: 4, SAnswer: 5, SClarify: 6, SDev: 7, SBug: 8, SReview: 9,
 }
 var agentChoices = []string{"claude", "codex", "gemini", "cursor"}
 
@@ -348,20 +348,29 @@ func blockedCard(r *Record, reason string) map[string]any {
 	if t := logTail(r, 4); t != "" {
 		els = append(els, md("**最近日志**\n<font color='grey'>"+trunc(t, 500)+"</font>"))
 	}
+	restartLabel := "重新澄清"
+	if isBugRecord(r) {
+		restartLabel = "重新修复"
+	}
 	els = append(els, actionRow(
 		button("解除阻塞", "unblock_dev", rid, "primary", nil),
-		button("重新澄清", "restart_clarify", rid, "default", nil),
+		button(restartLabel, "restart_clarify", rid, "default", nil),
 		button("清锁", "clear_lock", rid, "default", nil)))
-	return card(cardHeader("🚫 需求已阻塞："+recTitle(r), SBlocked, "red"), els...)
+	return card(cardHeader("🚫 任务已阻塞："+recTitle(r), SBlocked, "red"), els...)
 }
 
 // ── status ───────────────────────────────────────────────────────────
 func statusCard(r *Record) map[string]any {
 	status := recStatus(r)
 	rid := r.RecordID
+	agentLabel := orDefault(fieldText(r.Fields[FAgent]), "默认")
+	if isBugRecord(r) {
+		fix, review := resolveBugAgents(r)
+		agentLabel = fix + " 修复 / " + review + " Review"
+	}
 	els := []map[string]any{
 		fieldsBlock([2]string{"状态", status}, [2]string{"工作区", orDefault(fieldText(r.Fields[FWorkspace]), "默认")},
-			[2]string{"执行 Agent", orDefault(fieldText(r.Fields[FAgent]), "默认")}, [2]string{"失败次数", fieldText(r.Fields[FFails])}),
+			[2]string{"执行 Agent", agentLabel}, [2]string{"失败次数", fieldText(r.Fields[FFails])}),
 		md("**链接**\n" + linkText(fieldText(r.Fields[FLink]))),
 	}
 	if t := logTail(r, 3); t != "" {
@@ -382,7 +391,7 @@ func statusCard(r *Record) map[string]any {
 	if len(acts) > 0 {
 		els = append(els, actionRow(acts...))
 	}
-	return card(cardHeader("当前需求："+recTitle(r), status, ""), els...)
+	return card(cardHeader("当前任务："+recTitle(r), status, ""), els...)
 }
 
 // ── settings (配置 / 待选择) ──────────────────────────────────────────
@@ -390,7 +399,7 @@ func settingsHint(status string) string {
 	switch {
 	case status == SSetup:
 		return "✅ 选好澄清 Agent 和工作区后，点「🚀 开始澄清」即用所选配置在对应工作区澄清。"
-	case status == SDev || status == SReview || status == SMerge:
+	case status == SDev || status == SBug || status == SReview || status == SMerge:
 		return "⚠️ 已进入开发/Review：切换工作区**不会迁移**已建好的工作区，改 Agent 仅对之后阶段生效。"
 	case status == SBlocked:
 		return "提示：当前已阻塞；改完 Agent/工作区后用「解除阻塞」回到对应阶段才会生效。"
@@ -404,16 +413,26 @@ func settingsCard(r *Record, wsKeys []string) map[string]any {
 	rid := r.RecordID
 	status := recStatus(r)
 	curAgent := orDefault(fieldText(r.Fields[FAgent]), "默认")
+	choices := agentChoices
+	roleLabel := "执行 Agent"
+	startLabel := "🚀 开始澄清"
+	if isBugRecord(r) {
+		fix, review := resolveBugAgents(r)
+		curAgent = fix
+		choices = []string{"codex", "cursor"}
+		roleLabel = "修复 Agent（Review=" + review + "，自动使用另一个）"
+		startLabel = "🐛 开始调查并修复"
+	}
 	curWS := orDefault(fieldText(r.Fields[FWorkspace]), "默认")
 	var els []map[string]any
 	if status == SSetup {
-		els = append(els, md("👇 **选好下面的 Agent 和工作区，再点最底部「🚀 开始澄清」**，否则需求会一直停在这里不动。"))
+		els = append(els, md("👇 **选好下面的 Agent 和工作区，再点最底部开始按钮**，否则任务会一直停在这里不动。"))
 	}
 	els = append(els,
 		fieldsBlock([2]string{"状态", status}, [2]string{"当前 Agent", curAgent}, [2]string{"当前工作区", curWS}),
-		md("**执行 Agent**（点按即生效，对该需求所有阶段生效）"))
+		md("**"+roleLabel+"**（点按即生效）"))
 	var agentBtns []map[string]any
-	for _, a := range agentChoices {
+	for _, a := range choices {
 		bt := "default"
 		if a == curAgent {
 			bt = "primary"
@@ -436,17 +455,21 @@ func settingsCard(r *Record, wsKeys []string) map[string]any {
 		}
 		els = append(els, actionRow(wsBtns...))
 	}
-	if h := settingsHint(status); h != "" {
+	hint := settingsHint(status)
+	if isBugRecord(r) && status == SSetup {
+		hint = "✅ 开始后会强制创建独立 worktree，并使用另一个 Agent 做只读 Review。"
+	}
+	if h := hint; h != "" {
 		els = append(els, md("<font color='grey'>"+h+"</font>"))
 	}
 	if status == SSetup {
-		els = append(els, hr(), actionRow(button("🚀 开始澄清", "start_clarify", rid, "primary", nil)))
+		els = append(els, hr(), actionRow(button(startLabel, "start_clarify", rid, "primary", nil)))
 	} else if status == SConfirm {
 		els = append(els, hr(), actionRow(button("✅ 确认开发", "confirm", rid, "primary", nil)))
 	}
 	prefix := "配置"
 	if status == SSetup {
-		prefix = "新需求 · 选择澄清配置"
+		prefix = "新任务 · 选择执行配置"
 	}
 	return card(cardHeader(prefix+"："+recTitle(r), status, ""), els...)
 }
@@ -489,9 +512,9 @@ func boardActions(status, rid string) []map[string]any {
 func boardText(records []Record) string {
 	fl := inFlight(records)
 	if len(fl) == 0 {
-		return "需求看板：当前没有进行中的需求。"
+		return "任务看板：当前没有进行中的任务。"
 	}
-	lines := []string{fmt.Sprintf("需求看板 · %d 条在途：", len(fl))}
+	lines := []string{fmt.Sprintf("任务看板 · %d 条在途：", len(fl))}
 	for _, r := range fl {
 		st := recStatus(r)
 		mark := ""
@@ -506,15 +529,15 @@ func boardText(records []Record) string {
 func boardCard(records []Record) map[string]any {
 	fl := inFlight(records)
 	if len(fl) == 0 {
-		return card(cardHeader("需求看板 · 无在途需求", "", "grey"),
-			md("当前没有进行中的需求。发「需求@cursor：…」开一条。"))
+		return card(cardHeader("任务看板 · 无在途任务", "", "grey"),
+			md("当前没有进行中的任务。发「需求@cursor：…」或「Bug@codex：…」开一条。"))
 	}
 	counts := map[string]int{}
 	for _, r := range fl {
 		counts[recStatus(r)]++
 	}
 	var parts []string
-	for _, st := range []string{SBlocked, SSetup, SConfirm, SMerge, SAnswer, SClarify, SDev, SReview} {
+	for _, st := range []string{SBlocked, SSetup, SConfirm, SMerge, SAnswer, SClarify, SDev, SBug, SReview} {
 		if counts[st] > 0 {
 			parts = append(parts, fmt.Sprintf("%s%s %d", statusEmoji[st], st, counts[st]))
 		}
@@ -539,7 +562,7 @@ func boardCard(records []Record) map[string]any {
 	if len(els) > 0 && els[len(els)-1]["tag"] == "hr" {
 		els = els[:len(els)-1]
 	}
-	return card(cardHeader(fmt.Sprintf("需求看板 · %d 条在途", len(fl)), "", "blue"), els...)
+	return card(cardHeader(fmt.Sprintf("任务看板 · %d 条在途", len(fl)), "", "blue"), els...)
 }
 
 func orDefault(s, def string) string {

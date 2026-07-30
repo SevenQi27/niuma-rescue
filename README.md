@@ -1,8 +1,8 @@
 # niuma — an AI agent orchestration daemon
 
-**Drop a requirement into Feishu (Lark). Agents clarify, develop, test and deliver it.**
+**Drop a requirement or Bug into Feishu (Lark). Agents clarify, investigate, fix, test and review it.**
 
-niuma is a single-binary Go daemon that turns Feishu IM into the front-end of a
+niuma is a Go control-plane daemon that turns Feishu IM into the front-end of a
 multi-stage AI development pipeline. It listens for requirements over a long
 connection, tracks them through a validated state machine backed by Feishu Base
 (Bitable), and drives CLI coding agents — **Cursor / Claude Code / Codex /
@@ -16,9 +16,10 @@ Built because I use it daily: it runs my own backlog.
 ## How it works
 
 ```
-Feishu IM ──long conn──▶ niuma (single process)
+Feishu IM ──long conn──▶ niuma (Go daemon)
                           ├─ message/card callbacks → router → Feishu Base records
                           ├─ dispatcher (goroutines) → per-stage CLI agent calls
+                          ├─ Bug → Python LangGraph → Codex/Cursor repair loop
                           └─ git worktree / inline edits → review gate → status,
                              logs and alert cards pushed back to Feishu
 ```
@@ -44,15 +45,15 @@ a whitelist (`ValidTransitions`), so a record can never skip a human gate.
   crash recovery, exponential retry with a failure ceiling, hung-agent watchdog,
   blocked-state alert cards
 - **Feishu commands** — kanban, health, stats, weekly report, retry, unblock…
-- **ZenTao integration** — import bugs from ZenTao (incl. v12 token auth) into
-  the same pipeline
+- **Bug repair graph** — isolated worktree, investigation, minimal fix, tests,
+  independent Codex/Cursor review, bounded repair loop, then human merge
 
 ## Design decisions
 
-**Single process, single static binary.** The orchestrator's job is I/O
-coordination, not computation — one Go process with goroutines replaces the
-earlier multi-service Python version. Deployment is `scp + run`; state lives in
-SQLite and Feishu Base, so the binary itself is disposable.
+**Go control plane, small Python graph runtime.** Feishu, locks, Git policy and
+agent CLI adapters stay in one Go daemon. Only the stateful Bug repair loop runs
+in a local Python LangGraph sidecar, invoked as a subprocess. The two components
+communicate through a strict JSON protocol and persist checkpoints in SQLite.
 
 **Feishu Base as the source of truth, SQLite as the execution ledger.**
 Requirement status must be visible and editable by humans, so it lives in a
@@ -90,6 +91,8 @@ automating everything *between* those taps, not from removing them.
 ```bash
 cd go
 GOPROXY=https://goproxy.cn,direct go build -o niuma .
+cd ../buggraph
+python3 -m venv .venv && .venv/bin/python -m pip install -e .
 # reuse .env from the parent dir (Feishu credentials / Base / repo paths), see .env.example
 ./niuma
 ```
@@ -109,11 +112,11 @@ See [LICENSE](LICENSE).
 
 把需求丢进飞书，让 Agent 替你加班。
 
-飞书多维表格做需求池 + 状态机，本地一个常驻进程监听消息、调度 Cursor / Claude / Codex / Gemini
-等 CLI Agent 跑完需求澄清 → 开发 → 测试 → Review → 交付流转。
+飞书多维表格做任务池 + 状态机，本地 Go 常驻进程监听消息、调度 Cursor / Claude / Codex / Gemini。
+需求走澄清 → 开发 → Review；Bug 由 Python LangGraph 编排调查 → 修复 → 测试 → 独立 Review → 有界返修。
 
-> **本仓库已是 Go 实现**（单进程、单静态二进制）。早期 Python 版的完整历史保留在 `main` 分支与
-> git 历史中；当前代码全部在 [`go/`](go/)。
+> **控制面已是 Go 实现**；Bug 的有状态返修环由 [`buggraph/`](buggraph/) 中的 Python LangGraph
+> sidecar 承担。早期全 Python 版只保留在 git 历史中。
 
 ## 它能做什么
 
@@ -122,6 +125,7 @@ See [LICENSE](LICENSE).
 - 自动澄清（产出 PRD 或追问，多条**并行**）、人工确认后进「待开发」队列
 - **合批开发**：点「开始开发本批」把同工作区的多条需求合并成**一次** Agent 调用，开发完停在「待合并」由人决定 Review
 - 飞书命令：`需求池` `开始开发` `看板` `状态` `配置` `健康` `统计` `周报` `重试` `解除阻塞` …
+- **Bug 最小链路**：`Bug@codex：现象`（或 `@cursor`）→ 强制独立 worktree → 另一 Agent Review → 人工合并
 - agent 瞬时网络错自动重试、卡死看门狗、阻塞主动告警卡片
 - 默认 **inline 模式**（所有需求在目标仓库当前工作树上改、人工决定提交）；也可按工作区切 `worktree`（各自独立目录/分支、自动 push/PR/MR）。本地 SQLite 记录执行锁/去重/重试
 

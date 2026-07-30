@@ -6,6 +6,8 @@ fields.json
 .claude/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
 worktrees/
 .venv/
 .dispatcher.lock

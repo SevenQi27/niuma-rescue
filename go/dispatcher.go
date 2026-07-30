@@ -608,6 +608,8 @@ func (a *App) runStage(status string, rec *Record, runID string) (err error) {
 		a.handleClarify(rec, runID)
 	case SDev:
 		a.handleDevelop(rec, runID)
+	case SBug:
+		a.handleBug(rec, runID)
 	case SReview:
 		a.handleReview(rec, runID)
 	}
@@ -619,7 +621,7 @@ func (a *App) processChain(rec *Record) {
 	// 澄清若开了合批（BatchClarify），也按工作区独占——一次 agent 处理该工作区所有待澄清；
 	// 没开合批则澄清只读、放开并行。
 	status := fieldText(rec.Fields[FStatus])
-	needLock := status != SClarify || cfg.BatchClarify
+	needLock := status != SBug && (status != SClarify || cfg.BatchClarify)
 	if ws := a.workspaceFor(rec); ws.inline() && needLock {
 		lk := a.wsLock(ws.Key)
 		if !lk.TryLock() {
@@ -631,7 +633,7 @@ func (a *App) processChain(rec *Record) {
 	for Actionable[fieldText(rec.Fields[FStatus])] {
 		status := fieldText(rec.Fields[FStatus])
 		title := recTitle(rec)
-		stage := map[string]string{SClarify: "clarify", SDev: "develop", SReview: "review"}[status]
+		stage := map[string]string{SClarify: "clarify", SDev: "develop", SBug: "bug", SReview: "review"}[status]
 		claim := a.st.claim(rec.RecordID, stage, status, title)
 		if !claim.OK {
 			if claim.Reason == "retry_wait" {

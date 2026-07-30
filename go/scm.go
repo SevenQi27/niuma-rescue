@@ -29,7 +29,19 @@ func (w Workspace) inline() bool {
 
 // scmPrepare 为需求准备（或复用）开发目录。inline 模式直接使用原仓库。
 func scmPrepare(ws Workspace, reqID string) (workPath, branch string, err error) {
-	if ws.inline() {
+	return scmPrepareTask(ws, "REQ", reqID, false)
+}
+
+// scmPrepareBug 无论工作区默认策略是什么，都为 Bug 建立隔离 worktree。
+func scmPrepareBug(ws Workspace, bugID string) (Workspace, string, string, error) {
+	isolated := ws
+	isolated.WorkMode = "worktree"
+	workPath, branch, err := scmPrepareTask(isolated, "BUG", bugID, true)
+	return isolated, workPath, branch, err
+}
+
+func scmPrepareTask(ws Workspace, kind, taskID string, forceWorktree bool) (workPath, branch string, err error) {
+	if ws.inline() && !forceWorktree {
 		out, _ := git(ws.Path, "branch", "--show-current")
 		branch = strings.TrimSpace(out)
 		if branch == "" {
@@ -41,8 +53,8 @@ func scmPrepare(ws Workspace, reqID string) (workPath, branch string, err error)
 	if e := os.MkdirAll(base, 0o755); e != nil {
 		return "", "", e
 	}
-	workPath = filepath.Join(base, "REQ-"+reqID)
-	branch = "niuma/REQ-" + reqID
+	workPath = filepath.Join(base, kind+"-"+taskID)
+	branch = "niuma/" + kind + "-" + taskID
 	if fi, e := os.Stat(filepath.Join(workPath, ".git")); e == nil || (fi != nil && fi.IsDir()) {
 		return workPath, branch, nil // 复用
 	}
@@ -79,10 +91,14 @@ func changedFiles(ws Workspace, wt string) []string {
 		}
 		return files
 	}
-	out, _ := git(wt, "diff", "--name-only", ws.BaseRef+"...HEAD")
+	out, _ := git(wt, "diff", "--name-only", ws.BaseRef)
+	untracked, _ := git(wt, "ls-files", "--others", "--exclude-standard")
+	out += "\n" + untracked
+	seen := map[string]bool{}
 	var files []string
 	for _, l := range strings.Split(out, "\n") {
-		if l = strings.TrimSpace(l); l != "" {
+		if l = strings.TrimSpace(l); l != "" && !seen[l] {
+			seen[l] = true
 			files = append(files, l)
 		}
 	}
@@ -110,13 +126,27 @@ func diffText(ws Workspace, wt string) string {
 		}
 		return strings.TrimSpace(out + "\n" + body)
 	}
-	out, _ := git(wt, "diff", ws.BaseRef+"...HEAD")
+	out, _ := git(wt, "diff", ws.BaseRef)
+	untracked, _ := git(wt, "ls-files", "--others", "--exclude-standard")
+	if strings.TrimSpace(untracked) != "" {
+		out += "\n\nUntracked files:\n" + untracked
+	}
 	return out
 }
 
 func gitCommitAll(wt, msg string) {
 	git(wt, "add", "-A")
 	git(wt, "commit", "-m", msg) // 没改动则失败，忽略
+}
+
+func gitCommitAllChecked(wt, msg string) error {
+	if out, err := git(wt, "add", "-A"); err != nil {
+		return errf("git add: %s", strings.TrimSpace(out))
+	}
+	if out, err := git(wt, "commit", "-m", msg); err != nil {
+		return errf("git commit: %s", strings.TrimSpace(out))
+	}
+	return nil
 }
 
 // afterDevelop：开发完成后发布（push 开则推分支）。
