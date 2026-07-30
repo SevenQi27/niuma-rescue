@@ -55,9 +55,22 @@ Agent 字段（单选）：
 执行Agent / 澄清Agent / 开发Agent / ReviewAgent
 ```
 
+任务分类字段（单选）：
+
+```text
+任务类型：需求 / Bug
+```
+
 **`状态` 单选必须包含以下选项**（名字完全一致，缺一个会导致写入被飞书拒绝）：
 
 ```text
-待选择 · 待澄清 · 待回答 · 待确认 · 待开发 · 开发中 · Review中 · 待合并 · 完成 · 已阻塞
+待选择 · 待澄清 · 待回答 · 待确认 · 待开发 · 开发中 · Bug处理中 · Review中 · 待合并 · 完成 · 已阻塞
 ```
 
+可先只读检查，再幂等补齐 Bug 所需字段/选项：
+
+```bash
+cd go
+./niuma schema-check-bug
+./niuma schema-ensure-bug
+```

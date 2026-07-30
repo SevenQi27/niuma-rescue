@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "niuma-buggraph"
+version = "0.1.0"
+description = "LangGraph bug repair workflow for niuma"
+requires-python = ">=3.10"
+dependencies = [
+  "langgraph==1.2.10",
+  "langgraph-checkpoint-sqlite==3.1.0",
+]
+
+[project.scripts]
+niuma-buggraph = "buggraph.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
+
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from .bridge import AgentBridge
+from .graph import build_graph
+
+
+def run(payload: dict) -> dict:
+    required = {"record_id", "title", "description", "worktree", "base_ref", "fix_agent", "review_agent", "agent_runner"}
+    missing = sorted(key for key in required if not str(payload.get(key, "")).strip())
+    if missing:
+        raise ValueError(f"missing required fields: {', '.join(missing)}")
+    if payload["fix_agent"] == payload["review_agent"]:
+        raise ValueError("fix_agent and review_agent must be different")
+
+    checkpoint_db = Path(payload["checkpoint_db"])
+    checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "record_id": payload["record_id"],
+        "title": payload["title"],
+        "description": payload["description"],
+        "clarifications": payload.get("clarifications", ""),
+        "worktree": payload["worktree"],
+        "base_ref": payload["base_ref"],
+        "test_cmd": payload.get("test_cmd", ""),
+        "fix_agent": payload["fix_agent"],
+        "review_agent": payload["review_agent"],
+        "fix_timeout": int(payload.get("fix_timeout", 1800)),
+        "review_timeout": int(payload.get("review_timeout", 900)),
+        "test_timeout": int(payload.get("test_timeout", 1800)),
+        "max_repairs": max(1, int(payload.get("max_repairs", 2))),
+        "iteration": 0,
+        "status": "NEW",
+    }
+    config = {"configurable": {"thread_id": payload.get("thread_id", f"bug:{payload['record_id']}")}}
+    bridge = AgentBridge(payload["agent_runner"])
+    with SqliteSaver.from_conn_string(str(checkpoint_db)) as checkpointer:
+        graph = build_graph(bridge, checkpointer)
+        snapshot = graph.get_state(config)
+        if snapshot.values and snapshot.next:
+            result = graph.invoke(None, config=config)
+        else:
+            result = graph.invoke(state, config=config)
+    return {
+        "status": result.get("status", "BLOCKED"),
+        "summary": result.get("summary", ""),
+        "diagnosis": result.get("diagnosis", ""),
+        "questions": result.get("questions", ""),
+        "test_ok": bool(result.get("test_ok", False)),
+        "test_output": result.get("test_output", ""),
+        "review_output": result.get("review_output", ""),
+        "iteration": int(result.get("iteration", 0)),
+    }
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+        json.dump(run(payload), sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")
+        return 0
+    except Exception as exc:  # CLI boundary: keep stdout parseable only on success.
+        print(f"buggraph failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

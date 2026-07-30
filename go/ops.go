@@ -47,7 +47,7 @@ func (a *App) clearLock(rec *Record) opResult {
 
 func (a *App) unblockRecord(rec *Record, status string) opResult {
 	if !Actionable[status] {
-		return opResult{"解除阻塞目标状态必须是：待澄清 / 开发中 / Review中", false, false}
+		return opResult{"解除阻塞目标状态必须是：待澄清 / 开发中 / Bug处理中 / Review中", false, false}
 	}
 	a.st.clear(rec.RecordID, "manual unblock")
 	a.updateWithLog(rec, map[string]any{FStatus: status, FFails: 0}, "[manual] 解除阻塞，回到"+status)
@@ -64,15 +64,42 @@ func (a *App) restartClarify(rec *Record) opResult {
 	if fieldText(rec.Fields[FStatus]) == SDone {
 		return opResult{"「" + recTitle(rec) + "」已完成，不能重新澄清。", false, false}
 	}
-	a.st.clear(rec.RecordID, "manual restart clarify")
-	a.updateWithLog(rec, map[string]any{FStatus: SClarify, FFails: 0}, "[manual] 重新进入澄清")
-	return opResult{"已重新进入澄清：" + recTitle(rec), true, true}
+	next := SClarify
+	label := "澄清"
+	if isBugRecord(rec) {
+		next = SBug
+		label = "Bug 修复"
+	}
+	a.st.clear(rec.RecordID, "manual restart "+label)
+	a.updateWithLog(rec, map[string]any{FStatus: next, FFails: 0}, "[manual] 重新进入"+label)
+	return opResult{"已重新进入" + label + "：" + recTitle(rec), true, true}
 }
 
 func (a *App) setAgent(rec *Record, agent, stage string) opResult {
 	e := normalizeAgent(agent)
 	if _, ok := AgentCmds[e]; !ok {
 		return opResult{"未知 Agent：" + agent, false, false}
+	}
+	if isBugRecord(rec) {
+		if !validBugAgent(e) {
+			return opResult{"Bug 流水线当前只支持 codex / cursor，且修复与 Review 必须不同。", false, false}
+		}
+		fix, review := resolveBugAgents(rec)
+		if stage == "review" {
+			review = e
+			if review == fix {
+				if review == "codex" {
+					fix = "cursor"
+				} else {
+					fix = "codex"
+				}
+			}
+		} else {
+			fix, review = bugAgentPair(e, cfg.EngineBugFix, cfg.EngineBugReview)
+		}
+		fields := map[string]any{FAgentCode: fix, FAgentReview: review}
+		a.updateWithLog(rec, fields, "[manual] 设置 Bug Agent：修复="+fix+" Review="+review)
+		return opResult{"已设置 Bug Agent：修复=" + fix + " / Review=" + review + "：" + recTitle(rec), true, false}
 	}
 	field := map[string]string{"clarify": FAgentClarify, "code": FAgentCode, "review": FAgentReview}[stage]
 	if field == "" {

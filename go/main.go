@@ -7,6 +7,16 @@ import (
 
 func main() {
 	cfg = loadConfig()
+	if len(os.Args) > 1 && os.Args[1] == "agent-run" {
+		os.Exit(runAgentCommand())
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "schema-check-bug" || os.Args[1] == "schema-ensure-bug") {
+		if err := cfg.validateSchemaCommand(); err != nil {
+			logf("配置错误: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(runSchemaCommand(os.Args[1] == "schema-ensure-bug"))
+	}
 	if err := cfg.validate(); err != nil {
 		logf("配置错误: %v", err)
 		os.Exit(1)
