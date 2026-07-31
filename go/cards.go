@@ -175,8 +175,8 @@ func mergeCard(r *Record) map[string]any {
 	return card(cardHeader("待合并："+fieldText(r.Fields[FTitle]), SMerge, "green"),
 		fieldsBlock([2]string{"状态", SMerge}, [2]string{"工作区", ws}, [2]string{"Review Agent", agent}),
 		md("**Review 已通过**\n\nPR / MR / 分支：\n"+linkText(fieldText(r.Fields[FLink]))),
-		md("合并或确认提交后，点击下面按钮收尾。"),
-		actionRow(button("已合并 / 完成", "done", rid, "primary", nil)))
+		md("人工合并并同步目标分支后，点击下面按钮；Bug 任务会校验 Git 合并证据。"),
+		actionRow(button("确认已人工合并并完成", "done", rid, "primary", nil)))
 }
 
 // devQueueCard：待开发批次队列卡。列出某工作区排队中的需求，一个按钮整批开发。
@@ -386,7 +386,7 @@ func statusCard(r *Record) map[string]any {
 	case status == SConfirm:
 		acts = []map[string]any{button("确认开发", "confirm", rid, "primary", nil), button("重新澄清", "restart_clarify", rid, "default", nil)}
 	case status == SMerge:
-		acts = []map[string]any{button("已合并 / 完成", "done", rid, "primary", nil), button("重新澄清", "restart_clarify", rid, "default", nil)}
+		acts = []map[string]any{button("确认已人工合并并完成", "done", rid, "primary", nil), button("重新澄清", "restart_clarify", rid, "default", nil)}
 	}
 	if len(acts) > 0 {
 		els = append(els, actionRow(acts...))
@@ -504,7 +504,7 @@ func boardActions(status, rid string) []map[string]any {
 	case SConfirm:
 		return []map[string]any{button("确认开发", "confirm", rid, "primary", nil)}
 	case SMerge:
-		return []map[string]any{button("已合并 / 完成", "done", rid, "primary", nil)}
+		return []map[string]any{button("确认已人工合并并完成", "done", rid, "primary", nil)}
 	}
 	return nil
 }

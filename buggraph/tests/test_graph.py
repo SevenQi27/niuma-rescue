@@ -63,6 +63,32 @@ class GraphTest(unittest.TestCase):
         self.assertEqual("BLOCKED", result["status"])
         self.assertIn("最大返修轮次", result["summary"])
 
+    def test_test_failure_never_reaches_reviewer_and_blocks_at_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge = FakeBridge(["DIAGNOSED\nroot cause", "FIXED\nfirst", "FIXED\nsecond"])
+            state = initial(tmp)
+            state["test_cmd"] = "/usr/bin/false"
+            result = build_graph(bridge).invoke(state)
+        self.assertEqual("BLOCKED", result["status"])
+        self.assertFalse(result["test_ok"])
+        self.assertIn("最后测试失败", result["summary"])
+        self.assertEqual(["codex", "codex", "codex"], bridge.engines)
+
+    def test_test_failure_returns_to_fix_before_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "test-passed"
+            command = f"test -f {marker} || (touch {marker} && exit 1)"
+            bridge = FakeBridge([
+                "DIAGNOSED\nroot cause", "FIXED\nfirst", "FIXED\nsecond", "PASS\nlooks good",
+            ])
+            state = initial(tmp)
+            state["test_cmd"] = command
+            result = build_graph(bridge).invoke(state)
+        self.assertEqual("PASS", result["status"])
+        self.assertTrue(result["test_ok"])
+        self.assertEqual(2, result["iteration"])
+        self.assertEqual(["codex", "codex", "codex", "cursor"], bridge.engines)
+
 
 if __name__ == "__main__":
     unittest.main()

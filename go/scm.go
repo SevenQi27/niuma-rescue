@@ -40,6 +40,56 @@ func scmPrepareBug(ws Workspace, bugID string) (Workspace, string, string, error
 	return isolated, workPath, branch, err
 }
 
+func bugBranchName(bugID string) string {
+	return "niuma/BUG-" + bugID
+}
+
+// verifyBugMerged 只做本地 Git 证据校验：目标分支必须包含 Bug 提交，
+// 或包含与 Bug 分支等价的补丁（兼容 squash merge）。
+func verifyBugMerged(ws Workspace, bugID string) (bool, string) {
+	branch := bugBranchName(bugID)
+	if out, err := git(ws.Path, "rev-parse", "--verify", branch+"^{commit}"); err != nil {
+		return false, "找不到 Bug 分支 " + branch + "：" + strings.TrimSpace(out)
+	}
+	targets := []string{ws.TargetBranch}
+	if ws.BaseRef != "" && ws.BaseRef != ws.TargetBranch {
+		targets = append(targets, ws.BaseRef)
+	}
+	for _, target := range targets {
+		if strings.TrimSpace(target) == "" {
+			continue
+		}
+		if _, err := git(ws.Path, "rev-parse", "--verify", target+"^{commit}"); err != nil {
+			continue
+		}
+		if _, err := git(ws.Path, "merge-base", "--is-ancestor", branch, target); err == nil {
+			return true, target + " 已包含 " + branch
+		}
+		out, err := git(ws.Path, "cherry", target, branch)
+		if err != nil {
+			continue
+		}
+		lines := strings.Fields(strings.TrimSpace(out))
+		if len(lines) > 0 {
+			equivalent := true
+			for i := 0; i < len(lines); i += 2 {
+				if lines[i] != "-" {
+					equivalent = false
+					break
+				}
+			}
+			if equivalent {
+				return true, target + " 已包含与 " + branch + " 等价的补丁"
+			}
+		}
+	}
+	target := ws.TargetBranch
+	if target == "" {
+		target = ws.BaseRef
+	}
+	return false, "目标分支 " + target + " 尚未包含 " + branch
+}
+
 func scmPrepareTask(ws Workspace, kind, taskID string, forceWorktree bool) (workPath, branch string, err error) {
 	if ws.inline() && !forceWorktree {
 		out, _ := git(ws.Path, "branch", "--show-current")

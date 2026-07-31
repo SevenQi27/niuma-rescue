@@ -48,3 +48,57 @@ func TestScmPrepareBugForcesWorktreeAndTracksUncommittedFiles(t *testing.T) {
 		t.Fatalf("unexpected changed files: %#v", files)
 	}
 }
+
+func TestVerifyBugMergedRequiresTargetBranchEvidence(t *testing.T) {
+	repo := t.TempDir()
+	worktrees := t.TempDir()
+	commands := [][]string{
+		{"init", "-b", "main"},
+		{"config", "user.email", "niuma-test@example.com"},
+		{"config", "user.name", "niuma test"},
+	}
+	for _, args := range commands {
+		if out, err := git(repo, args...); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "app.txt"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git(repo, "add", "app.txt"); err != nil {
+		t.Fatalf("git add: %v %s", err, out)
+	}
+	if out, err := git(repo, "commit", "-m", "base"); err != nil {
+		t.Fatalf("git commit: %v %s", err, out)
+	}
+
+	oldCfg := cfg
+	cfg = &Config{WorktreeBase: worktrees}
+	t.Cleanup(func() { cfg = oldCfg })
+	ws := Workspace{Key: "demo", Path: repo, SCM: "git", WorkMode: "inline", BaseRef: "main", TargetBranch: "main"}
+	_, wt, branch, err := scmPrepareBug(ws, "rec2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != bugBranchName("rec2") {
+		t.Fatalf("unexpected branch: %s", branch)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "app.txt"), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git(wt, "add", "app.txt"); err != nil {
+		t.Fatalf("git add: %v %s", err, out)
+	}
+	if out, err := git(wt, "commit", "-m", "fix"); err != nil {
+		t.Fatalf("git commit: %v %s", err, out)
+	}
+	if ok, _ := verifyBugMerged(ws, "rec2"); ok {
+		t.Fatal("unmerged bug branch must not be accepted")
+	}
+	if out, err := git(repo, "merge", "--ff-only", branch); err != nil {
+		t.Fatalf("git merge: %v %s", err, out)
+	}
+	if ok, detail := verifyBugMerged(ws, "rec2"); !ok {
+		t.Fatalf("merged bug branch rejected: %s", detail)
+	}
+}

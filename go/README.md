@@ -63,7 +63,7 @@ cp ../.env.example ../.env
 | `PIPELINE_POLL_INTERVAL` | `900` | 兜底轮询秒数（主要靠事件驱动） |
 | `PIPELINE_AGENT_RUNS_KEEP` | `200` | `state/agent-runs/` 保留最近 N 次调用产物 |
 | `PIPELINE_ENGINE_BUG_FIX` / `_BUG_REVIEW` | `codex` / `cursor` | Bug 修复与独立 Review Agent（必须不同） |
-| `PIPELINE_BUG_REPAIR_LIMIT` | `2` | Review FAIL 后最多返修总轮数 |
+| `PIPELINE_BUG_REPAIR_LIMIT` | `2` | 测试失败或 Review FAIL 后最多返修总轮数 |
 | `PIPELINE_BUG_GRAPH_PYTHON` | 自动发现 `buggraph/.venv` | LangGraph Python 解释器 |
 
 多工作区 / worktree 模式 / SCM 见 [../workspaces.example.json](../workspaces.example.json) 与 [../docs/config-reference.md](../docs/config-reference.md)。
@@ -184,7 +184,7 @@ nssm start niuma          :: 重新 build 后用 nssm restart niuma
              └─ 待澄清（多条并行澄清）→ 待回答(补充) / 待确认(确认 PRD)
                   └─ 确认 → 进「待开发」队列（攒着，不自动跑）
                        └─ 点「🚀 开始开发本批」→ 开发中（同工作区合批成一次执行）
-                            └─ 待合并 → 「🔍 做 Review」或「标记完成」
+                            └─ 待合并 → 「🔍 做 Review」或「确认已人工合并并完成」
 ```
 
 Bug 走独立最小链路：
@@ -197,6 +197,8 @@ Bug 走独立最小链路：
                   ├─ FAIL → 返回修复（最多 2 轮）
                   ├─ NEEDS_INPUT → 待回答
                   └─ PASS → 本地提交/按配置推送 → 待人工合并
+测试失败 ──→ 返回修复；达到返修上限后阻塞，不进入 Review
+Bug 完成 ──→ 校验目标分支已包含 Bug 提交或等价补丁
 ```
 
 Bug 流水线不会自动建 PR、不会自动合并，也不会使用 inline 工作树。
