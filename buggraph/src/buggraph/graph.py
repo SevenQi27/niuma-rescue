@@ -131,6 +131,13 @@ Bug: {state['title']}
             return {"test_ok": False, "test_output": f"test command failed: {exc}", "status": "TESTED"}
 
     def review(state: BugState) -> BugState:
+        if not state.get("test_ok", False):
+            output = state.get("test_output", "")
+            return {
+                "status": "BLOCKED",
+                "review_output": "",
+                "summary": f"测试未通过，禁止进入 Review：{output}",
+            }
         prompt = f"""你是独立 Reviewer，只读审查，绝对不要修改文件、commit、push、创建 PR 或合并。
 你必须检查当前 worktree 的真实 git diff 和相关代码，不可只信修复 Agent 的总结。
 
@@ -173,6 +180,13 @@ Bug: {state['title']}
     def route_fix(state: BugState) -> str:
         return "test" if state.get("status") == "FIXED" else "end"
 
+    def route_test(state: BugState) -> str:
+        if state.get("test_ok", False):
+            return "review"
+        if int(state.get("iteration", 0)) < int(state.get("max_repairs", 2)):
+            return "fix"
+        return "exhausted"
+
     def route_review(state: BugState) -> str:
         if state.get("status") == "PASS":
             return "end"
@@ -181,9 +195,13 @@ Bug: {state['title']}
         return "exhausted" if state.get("status") == "FAIL" else "end"
 
     def exhausted(state: BugState) -> BugState:
+        if not state.get("test_ok", False):
+            reason = f"最后测试失败：{state.get('test_output', '')}"
+        else:
+            reason = f"最后 Review：{state.get('review_output', '')}"
         return {
             "status": "BLOCKED",
-            "summary": f"达到最大返修轮次 {state.get('max_repairs', 2)}；最后 Review：{state.get('review_output', '')}",
+            "summary": f"达到最大返修轮次 {state.get('max_repairs', 2)}；{reason}",
         }
 
     graph = StateGraph(BugState)
@@ -195,7 +213,7 @@ Bug: {state['title']}
     graph.add_edge(START, "investigate")
     graph.add_conditional_edges("investigate", route_investigation, {"fix": "fix", "end": END})
     graph.add_conditional_edges("fix", route_fix, {"test": "test", "end": END})
-    graph.add_edge("test", "review")
+    graph.add_conditional_edges("test", route_test, {"review": "review", "fix": "fix", "exhausted": "exhausted"})
     graph.add_conditional_edges("review", route_review, {"fix": "fix", "exhausted": "exhausted", "end": END})
     graph.add_edge("exhausted", END)
     return graph.compile(checkpointer=checkpointer)

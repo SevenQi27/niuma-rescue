@@ -55,9 +55,21 @@ func (a *App) unblockRecord(rec *Record, status string) opResult {
 }
 
 func (a *App) markDone(rec *Record) opResult {
+	if status := fieldText(rec.Fields[FStatus]); status != SMerge {
+		return opResult{"当前状态「" + status + "」，只有待合并任务可以确认完成。", false, false}
+	}
+	if isBugRecord(rec) {
+		ws := a.workspaceFor(rec)
+		if !strings.EqualFold(ws.SCM, "git") {
+			return opResult{"Bug 完成校验只支持 Git 工作区。", false, false}
+		}
+		if ok, detail := verifyBugMerged(ws, rec.RecordID); !ok {
+			return opResult{"尚不能标记完成：" + detail + "。请先人工合并，并确保本地目标分支已同步。", false, false}
+		}
+	}
 	a.st.clear(rec.RecordID, "manual done")
-	a.updateWithLog(rec, map[string]any{FStatus: SDone}, "[manual] 人工标记完成")
-	return opResult{"已标记完成：" + recTitle(rec), true, false}
+	a.updateWithLog(rec, map[string]any{FStatus: SDone}, "[manual] 已确认人工合并并完成")
+	return opResult{"已确认人工合并并完成：" + recTitle(rec), true, false}
 }
 
 func (a *App) restartClarify(rec *Record) opResult {

@@ -532,11 +532,11 @@ func (a *App) handleCardAction(value map[string]any) (string, bool, map[string]a
 		a.sendDevQueueCard(fieldText(rec.Fields[FChat]), a.workspaceFor(rec))
 		return "✅ 已确认，进入待开发队列", false, doneToastCard("✅ 已确认："+title, "已进入「待开发」队列；攒齐后点批次卡片的「🚀 开始开发本批」整批开跑。", "blue")
 	case "done":
-		if status != SMerge {
-			return "当前状态「" + status + "」", false, nil
+		r := a.markDone(rec)
+		if !r.ok {
+			return r.msg, false, doneToastCard("⚠️ 尚未完成："+title, r.msg, "yellow")
 		}
-		a.fs.updateRecord(rid, map[string]any{FStatus: SDone})
-		return "✅ 已标记完成", false, doneToastCard("✅ 已完成："+title, "需求已收尾。", "green")
+		return "✅ 已确认合并并完成", false, doneToastCard("✅ 已完成："+title, r.msg, "green")
 	case "do_review":
 		if status != SMerge {
 			return "当前状态「" + status + "」，无法发起 Review", false, nil
