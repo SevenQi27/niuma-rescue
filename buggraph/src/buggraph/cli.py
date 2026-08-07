@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")
@@ -11,6 +13,23 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 
 from .bridge import AgentBridge
 from .graph import build_graph
+
+
+def progress_writer(path_value: str):
+    path_text = str(path_value or "").strip()
+    if not path_text:
+        return None
+    path = Path(path_text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write(event: dict) -> None:
+        payload = dict(event)
+        payload["ts"] = time.time()
+        payload["time"] = datetime.now(timezone.utc).isoformat()
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    return write
 
 
 def run(payload: dict) -> dict:
@@ -42,8 +61,9 @@ def run(payload: dict) -> dict:
     }
     config = {"configurable": {"thread_id": payload.get("thread_id", f"bug:{payload['record_id']}")}}
     bridge = AgentBridge(payload["agent_runner"])
+    on_event = progress_writer(payload.get("progress_file", ""))
     with SqliteSaver.from_conn_string(str(checkpoint_db)) as checkpointer:
-        graph = build_graph(bridge, checkpointer)
+        graph = build_graph(bridge, checkpointer, on_event=on_event)
         snapshot = graph.get_state(config)
         if snapshot.values and snapshot.next:
             result = graph.invoke(None, config=config)

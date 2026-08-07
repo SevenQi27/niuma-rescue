@@ -49,6 +49,13 @@ func run() {
 			app.tick()
 		}
 	}()
+	if cfg.WebEnabled {
+		go func() {
+			if err := app.serveWeb(fire); err != nil {
+				elog("Web 控制台退出: %v", err)
+			}
+		}()
+	}
 	// 兜底轮询（也兼顾 WS 掉线窗口漏掉的触发）：启动先跑一轮，之后每 PollInterval 一次。
 	go func() {
 		for {

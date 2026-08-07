@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import subprocess
-from typing import Protocol, TypedDict
+from typing import Any, Callable, Protocol, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -47,8 +47,27 @@ def _body(output: str) -> str:
     return "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
 
 
-def build_graph(bridge: Bridge, checkpointer=None):
+def build_graph(
+    bridge: Bridge,
+    checkpointer=None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+):
+    def emit(stage: str, state: str, *, agent: str = "", detail: str = "", iteration: int = 0) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event({
+                "stage": stage,
+                "state": state,
+                "agent": agent,
+                "detail": detail[-12000:],
+                "iteration": iteration,
+            })
+        except Exception:
+            pass
+
     def investigate(state: BugState) -> BugState:
+        emit("investigate", "running", agent=state["fix_agent"], detail="正在读取代码并定位根因")
         prompt = f"""你是 Bug 调查 Agent，只能读取和分析，绝对不要修改文件、commit 或 push。
 请在当前 worktree 中复现或定位问题，检查真实代码、日志线索和测试。
 
@@ -69,17 +88,22 @@ Bug: {state['title']}
             timeout=state["fix_timeout"],
         )
         if not reply.ok:
+            emit("investigate", "failed", agent=state["fix_agent"], detail=reply.output)
             return {"status": "BLOCKED", "summary": reply.output, "diagnosis": reply.output}
         verdict = _verdict(reply.output, {"DIAGNOSED", "NEEDS_INPUT", "BLOCKED"})
         body = _body(reply.output)
         if verdict == "DIAGNOSED":
+            emit("investigate", "done", agent=state["fix_agent"], detail=body)
             return {"status": "DIAGNOSED", "diagnosis": body, "summary": body}
         if verdict == "NEEDS_INPUT":
+            emit("investigate", "waiting", agent=state["fix_agent"], detail=body)
             return {"status": "NEEDS_INPUT", "questions": body, "summary": body}
+        emit("investigate", "failed", agent=state["fix_agent"], detail=body or reply.output)
         return {"status": "BLOCKED", "diagnosis": body, "summary": body or reply.output}
 
     def fix(state: BugState) -> BugState:
         iteration = int(state.get("iteration", 0)) + 1
+        emit("fix", "running", agent=state["fix_agent"], detail="正在实施最小修复", iteration=iteration)
         feedback = state.get("review_output", "")
         test_output = state.get("test_output", "")
         prompt = f"""你是 Bug 修复 Agent。请在当前隔离 worktree 内完成最小、可验证的修复。
@@ -106,18 +130,25 @@ Bug: {state['title']}
             timeout=state["fix_timeout"],
         )
         if not reply.ok:
+            emit("fix", "failed", agent=state["fix_agent"], detail=reply.output, iteration=iteration)
             return {"iteration": iteration, "status": "BLOCKED", "fix_output": reply.output, "summary": reply.output}
         verdict = _verdict(reply.output, {"FIXED", "NEEDS_INPUT", "BLOCKED"})
         body = _body(reply.output)
         if verdict == "NEEDS_INPUT":
+            emit("fix", "waiting", agent=state["fix_agent"], detail=body, iteration=iteration)
             return {"iteration": iteration, "status": "NEEDS_INPUT", "questions": body, "fix_output": body, "summary": body}
         if verdict == "BLOCKED":
+            emit("fix", "failed", agent=state["fix_agent"], detail=body, iteration=iteration)
             return {"iteration": iteration, "status": "BLOCKED", "fix_output": body, "summary": body}
+        emit("fix", "done", agent=state["fix_agent"], detail=body, iteration=iteration)
         return {"iteration": iteration, "status": "FIXED", "fix_output": body, "summary": body}
 
     def test(state: BugState) -> BugState:
+        iteration = int(state.get("iteration", 0))
+        emit("test", "running", agent="Niuma", detail="正在执行工作区验证命令", iteration=iteration)
         command = state.get("test_cmd", "").strip()
         if not command:
+            emit("test", "done", agent="Niuma", detail="SKIPPED: workspace 未配置 test_cmd", iteration=iteration)
             return {"test_ok": True, "test_output": "SKIPPED: workspace 未配置 test_cmd", "status": "TESTED"}
         try:
             completed = subprocess.run(
@@ -126,18 +157,27 @@ Bug: {state['title']}
                 timeout=int(state.get("test_timeout", state["fix_timeout"])), check=False,
             )
             output = completed.stdout[-12000:]
+            emit(
+                "test", "done" if completed.returncode == 0 else "failed",
+                agent="Niuma", detail=output, iteration=iteration,
+            )
             return {"test_ok": completed.returncode == 0, "test_output": output, "status": "TESTED"}
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return {"test_ok": False, "test_output": f"test command failed: {exc}", "status": "TESTED"}
+            output = f"test command failed: {exc}"
+            emit("test", "failed", agent="Niuma", detail=output, iteration=iteration)
+            return {"test_ok": False, "test_output": output, "status": "TESTED"}
 
     def review(state: BugState) -> BugState:
+        iteration = int(state.get("iteration", 0))
         if not state.get("test_ok", False):
             output = state.get("test_output", "")
+            emit("review", "failed", agent=state["review_agent"], detail=f"测试未通过，未进入 Review：{output}", iteration=iteration)
             return {
                 "status": "BLOCKED",
                 "review_output": "",
                 "summary": f"测试未通过，禁止进入 Review：{output}",
             }
+        emit("review", "running", agent=state["review_agent"], detail="正在独立检查真实 diff 和回归风险", iteration=iteration)
         prompt = f"""你是独立 Reviewer，只读审查，绝对不要修改文件、commit、push、创建 PR 或合并。
 你必须检查当前 worktree 的真实 git diff 和相关代码，不可只信修复 Agent 的总结。
 
@@ -163,15 +203,20 @@ Bug: {state['title']}
             timeout=state["review_timeout"],
         )
         if not reply.ok:
+            emit("review", "failed", agent=state["review_agent"], detail=reply.output, iteration=iteration)
             return {"status": "BLOCKED", "review_output": reply.output, "summary": reply.output}
         verdict = _verdict(reply.output, {"PASS", "FAIL", "NEEDS_INPUT", "BLOCKED"})
         body = _body(reply.output)
         if verdict == "PASS":
+            emit("review", "done", agent=state["review_agent"], detail=body, iteration=iteration)
             return {"status": "PASS", "review_output": body, "summary": body}
         if verdict == "FAIL":
+            emit("review", "failed", agent=state["review_agent"], detail=body, iteration=iteration)
             return {"status": "FAIL", "review_output": body, "summary": body}
         if verdict == "NEEDS_INPUT":
+            emit("review", "waiting", agent=state["review_agent"], detail=body, iteration=iteration)
             return {"status": "NEEDS_INPUT", "questions": body, "review_output": body, "summary": body}
+        emit("review", "failed", agent=state["review_agent"], detail=body or reply.output, iteration=iteration)
         return {"status": "BLOCKED", "review_output": body, "summary": body or reply.output}
 
     def route_investigation(state: BugState) -> str:
@@ -199,9 +244,11 @@ Bug: {state['title']}
             reason = f"最后测试失败：{state.get('test_output', '')}"
         else:
             reason = f"最后 Review：{state.get('review_output', '')}"
+        summary = f"达到最大返修轮次 {state.get('max_repairs', 2)}；{reason}"
+        emit("pipeline", "failed", agent="Niuma", detail=summary, iteration=int(state.get("iteration", 0)))
         return {
             "status": "BLOCKED",
-            "summary": f"达到最大返修轮次 {state.get('max_repairs', 2)}；{reason}",
+            "summary": summary,
         }
 
     graph = StateGraph(BugState)

@@ -13,6 +13,8 @@ type Workspace struct {
 	Path         string
 	SCM          string // git | svn
 	WorkMode     string // worktree | inline
+	WorktreeBase string // per-workspace worktree root; empty uses global default
+	RulesSource  string // source checkout whose AGENTS.md/.claude/rules are linked into worktrees
 	BaseRef      string
 	TargetBranch string
 	TestCmd      string
@@ -30,6 +32,8 @@ type wsItem struct {
 	Path         string `json:"path"`
 	SCM          string `json:"scm"`
 	WorkMode     string `json:"work_mode"`
+	WorktreeBase string `json:"worktree_base"`
+	RulesSource  string `json:"rules_source"`
 	Base         string `json:"base"`
 	TargetBranch string `json:"target_branch"`
 	TestCmd      string `json:"test_cmd"`
@@ -107,7 +111,7 @@ func workspaceGet(key string) (Workspace, error) {
 	}
 	return Workspace{
 		Key: key, Path: it.Path, SCM: scm, WorkMode: mode, BaseRef: base, TargetBranch: tb,
-		TestCmd: it.TestCmd, PRProvider: prov, GHRepo: it.GHRepo,
+		WorktreeBase: it.WorktreeBase, RulesSource: it.RulesSource, TestCmd: it.TestCmd, PRProvider: prov, GHRepo: it.GHRepo,
 		PushEnabled: it.PushEnabled, PREnabled: it.PREnabled,
 	}, nil
 }

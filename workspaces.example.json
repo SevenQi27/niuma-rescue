@@ -17,6 +17,8 @@
       "path": "/absolute/path/to/large/repo",
       "scm": "git",
       "work_mode": "worktree",
+      "worktree_base": "/absolute/path/to/worktree-folders",
+      "rules_source": "/absolute/path/to/source-checkout",
       "base": "origin/main",
       "push_enabled": false,
       "pr_enabled": false,

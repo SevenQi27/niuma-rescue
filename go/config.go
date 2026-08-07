@@ -100,6 +100,7 @@ type Config struct {
 	BaseToken, TableID                      string
 	RepoPath, BaseRef                       string
 	GHRepo, TestCmd                         string
+	WebAddr                                 string
 	EngineClarify, EngineCode, EngineReview string
 	EngineBugFix, EngineBugReview           string
 
@@ -109,6 +110,7 @@ type Config struct {
 	FailureLimit, PollInterval, MaxConcurrency          int
 	AgentRetries, AgentRunsKeep                         int
 	SetupGate, GateRelative, PushEnabled, PREnabled     bool
+	WebEnabled                                          bool
 	BatchDevelop, BatchClarify, InlineSkipGate          bool
 
 	Root, StateDir, WorktreeBase, WorkspacesFile string
@@ -130,6 +132,7 @@ func loadConfig() *Config {
 		BaseRef:   envText("PIPELINE_BASE_REF", "origin/main"),
 		GHRepo:    os.Getenv("PIPELINE_GH_REPO"),
 		TestCmd:   os.Getenv("PIPELINE_TEST_CMD"),
+		WebAddr:   envText("NIUMA_WEB_ADDR", ":8787"),
 
 		EngineClarify:   envText("PIPELINE_ENGINE_CLARIFY", "cursor"),
 		EngineCode:      envText("PIPELINE_ENGINE_CODE", "cursor"),
@@ -156,6 +159,7 @@ func loadConfig() *Config {
 		GateRelative: envBool("PIPELINE_GATE_RELATIVE", true),
 		PushEnabled:  envBool("PIPELINE_PUSH_ENABLED", false),
 		PREnabled:    envBool("PIPELINE_PR_ENABLED", false),
+		WebEnabled:   envBool("NIUMA_WEB_ENABLED", true),
 		// inline 默认：多需求合批成一次 agent 调用，跳过自动测试门，开发完停在「待合并」由人决定 Review。
 		BatchDevelop:   envBool("PIPELINE_BATCH_DEVELOP", true),
 		BatchClarify:   envBool("PIPELINE_BATCH_CLARIFY", true),
