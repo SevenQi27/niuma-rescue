@@ -218,6 +218,8 @@ GitLab 工作区示例：
   "path": "/absolute/path/to/gitlab/repo",
   "scm": "git",
   "work_mode": "worktree",
+  "worktree_base": "/absolute/path/to/worktree-folders",
+  "rules_source": "/absolute/path/to/source-checkout",
   "base": "origin/main",
   "target_branch": "main",
   "push_enabled": true,
@@ -227,6 +229,8 @@ GitLab 工作区示例：
   "test_cmd": "npm test"
 }
 ```
+
+`worktree_base` 可为该工作区指定独立目录。每个任务会从最新远端基线创建不跟踪主线的本地分支，并检出到该目录下的独立文件夹，适合并发 Agent 使用。`rules_source` 会把来源目录中的 `AGENTS.md` 和 `.claude/rules` 链接到每个新 worktree；这些路径应在目标仓库中保持忽略，避免进入功能提交。
 
 要求本机已安装并登录 `glab`。如果 `gitlab_repo` 留空，`glab` 会从当前 git remote 推断项目。
 

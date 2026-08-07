@@ -3,6 +3,19 @@
 把需求丢进飞书，Agent 替你澄清 → 开发 → Review → 交付。
 listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 Bug 返修环会启动本地 Python LangGraph 子进程。
 
+## 局域网 Bug 收件台
+
+服务默认同时监听 `:8787`，局域网用户访问 `http://<这台机器的局域网 IP>:8787` 后可以：
+
+- 新建 Bug，选择代码工作区和 Codex/Cursor 修复 Agent；
+- 上传图片、PDF、Excel 或 CSV 附件；图片可预览、文档可打开或下载，Agent 会在 Bug 档案中读取附件；
+- 在「待选择 / 待回答 / 已阻塞」阶段修改描述和补充信息；
+- 确认后启动既有的 worktree → 修复 → 测试 → 独立 Review → 人工合并路线；
+- 查看飞书多维表格中同一批 Bug 的状态和执行日志；
+- 在 Bug 卡片内展开 AI 执行过程，实时查看各阶段状态及 Agent 调查、修复、验证和 Review 结果。
+
+页面和 API 无需登录，飞书凭据仍只保留在服务端，不会发送到浏览器。此入口使用普通 HTTP，只适合可信局域网，不应直接暴露公网；如需公网访问，应在前面增加 HTTPS 和身份认证。`NIUMA_WEB_ENABLED=0` 可完全关闭。
+
 ---
 
 ## 前置条件
@@ -204,7 +217,7 @@ Bug 完成 ──→ 校验目标分支已包含 Bug 提交或等价补丁
 Bug 流水线不会自动建 PR、不会自动合并，也不会使用 inline 工作树。
 
 - **inline**（默认）：所有需求在 `PIPELINE_REPO_PATH` 的**当前工作树**上改动，不自动提交，由人决定。
-- 想每条需求隔离独立目录/分支、自动 push/PR/MR：在 `workspaces.json` 用 `work_mode: "worktree"`。
+- 想每条需求隔离独立目录/分支、自动 push/PR/MR：在 `workspaces.json` 用 `work_mode: "worktree"`，并可用 `worktree_base` 指定这些目录的统一位置；新分支从最新远端基线创建且不跟踪主线。若规则未提交到主线，可用 `rules_source` 把来源仓库的 `AGENTS.md` 和 `.claude/rules` 链接到每个目录。
 - 同一 inline 工作区内开发/Review 串行（共享一棵树）；澄清并行；不同工作区整体并行。
 
 ---

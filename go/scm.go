@@ -99,25 +99,101 @@ func scmPrepareTask(ws Workspace, kind, taskID string, forceWorktree bool) (work
 		}
 		return ws.Path, branch, nil
 	}
-	base := filepath.Join(cfg.WorktreeBase, ws.safeKey())
+	base := strings.TrimSpace(ws.WorktreeBase)
+	if base == "" {
+		base = filepath.Join(cfg.WorktreeBase, ws.safeKey())
+	}
 	if e := os.MkdirAll(base, 0o755); e != nil {
 		return "", "", e
 	}
 	workPath = filepath.Join(base, kind+"-"+taskID)
 	branch = "niuma/" + kind + "-" + taskID
-	if fi, e := os.Stat(filepath.Join(workPath, ".git")); e == nil || (fi != nil && fi.IsDir()) {
-		return workPath, branch, nil // 复用
-	}
 	if _, e := os.Stat(workPath); e == nil {
-		return workPath, branch, nil // 目录已在（worktree 元数据可能在别处）
+		out, branchErr := git(workPath, "branch", "--show-current")
+		if branchErr != nil || strings.TrimSpace(out) != branch {
+			return "", "", errf("worktree 目录已存在但分支不匹配: want=%s got=%s", branch, strings.TrimSpace(out))
+		}
+		if e := ensureBranchNoUpstream(ws.Path, branch); e != nil {
+			return "", "", e
+		}
+		if e := attachWorkspaceRules(workPath, ws.RulesSource); e != nil {
+			return "", "", e
+		}
+		return workPath, branch, nil // 复用同一任务的现有 worktree
 	}
-	// 尽力 fetch 一下 base
-	git(ws.Path, "fetch", "--quiet", "origin")
-	out, e := git(ws.Path, "worktree", "add", "-B", branch, workPath, ws.BaseRef)
+	if strings.HasPrefix(ws.BaseRef, "origin/") {
+		if out, e := git(ws.Path, "fetch", "--quiet", "origin"); e != nil {
+			return "", "", errf("更新 %s 失败: %s", ws.BaseRef, strings.TrimSpace(out))
+		}
+	}
+	_, branchErr := git(ws.Path, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	var out string
+	var e error
+	if branchErr == nil {
+		out, e = git(ws.Path, "worktree", "add", workPath, branch)
+	} else {
+		out, e = git(ws.Path, "worktree", "add", "--no-track", "-b", branch, workPath, ws.BaseRef)
+	}
 	if e != nil {
 		return "", "", errf("worktree 创建失败: %s", strings.TrimSpace(out))
 	}
+	if e := ensureBranchNoUpstream(ws.Path, branch); e != nil {
+		return "", "", e
+	}
+	if e := attachWorkspaceRules(workPath, ws.RulesSource); e != nil {
+		return "", "", e
+	}
 	return workPath, branch, nil
+}
+
+func attachWorkspaceRules(workPath, source string) error {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return nil
+	}
+	links := []struct{ source, target string }{
+		{filepath.Join(source, "AGENTS.md"), filepath.Join(workPath, "AGENTS.md")},
+		{filepath.Join(source, ".claude", "rules"), filepath.Join(workPath, ".claude", "rules")},
+	}
+	if e := os.MkdirAll(filepath.Join(workPath, ".claude"), 0o755); e != nil {
+		return errf("创建规则目录失败: %v", e)
+	}
+	for _, link := range links {
+		if _, e := os.Stat(link.source); e != nil {
+			return errf("规则来源不存在: %s", link.source)
+		}
+		if current, e := os.Readlink(link.target); e == nil {
+			if current == link.source {
+				continue
+			}
+			return errf("规则链接已指向其他位置: %s -> %s", link.target, current)
+		} else if !os.IsNotExist(e) {
+			return errf("规则目标已存在，拒绝覆盖: %s", link.target)
+		}
+		if e := os.Symlink(link.source, link.target); e != nil {
+			return errf("创建规则链接失败: %s: %v", link.target, e)
+		}
+	}
+	return nil
+}
+
+func ensureBranchNoUpstream(repo, branch string) error {
+	ref := "refs/heads/" + branch
+	out, e := git(repo, "for-each-ref", "--format=%(upstream:short)", ref)
+	if e != nil {
+		return errf("检查分支 upstream 失败: %s", strings.TrimSpace(out))
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil
+	}
+	if out, e = git(repo, "branch", "--unset-upstream", branch); e != nil {
+		return errf("清除分支 upstream 失败: %s", strings.TrimSpace(out))
+	}
+	out, e = git(repo, "for-each-ref", "--format=%(upstream:short)", ref)
+	if e != nil || strings.TrimSpace(out) != "" {
+		return errf("分支 %s 仍在跟踪 %s", branch, strings.TrimSpace(out))
+	}
+	return nil
 }
 
 func changedFiles(ws Workspace, wt string) []string {
@@ -190,7 +266,7 @@ func gitCommitAll(wt, msg string) {
 }
 
 func gitCommitAllChecked(wt, msg string) error {
-	if out, err := git(wt, "add", "-A"); err != nil {
+	if out, err := git(wt, "add", "-A", "--", ".", ":(exclude).pipeline", ":(exclude).pipeline/**"); err != nil {
 		return errf("git add: %s", strings.TrimSpace(out))
 	}
 	if out, err := git(wt, "commit", "-m", msg); err != nil {

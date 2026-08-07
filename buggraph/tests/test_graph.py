@@ -36,6 +36,22 @@ class GraphTest(unittest.TestCase):
         self.assertEqual(["codex", "codex", "cursor"], bridge.engines)
         self.assertEqual(1, result["iteration"])
 
+    def test_reports_live_pipeline_events(self) -> None:
+        events: list[dict] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            bridge = FakeBridge(["DIAGNOSED\nroot cause", "FIXED\nchanged a.go", "PASS\nlooks good"])
+            result = build_graph(bridge, on_event=events.append).invoke(initial(tmp))
+        self.assertEqual("PASS", result["status"])
+        self.assertEqual(
+            [
+                ("investigate", "running"), ("investigate", "done"),
+                ("fix", "running"), ("fix", "done"),
+                ("test", "running"), ("test", "done"),
+                ("review", "running"), ("review", "done"),
+            ],
+            [(event["stage"], event["state"]) for event in events],
+        )
+
     def test_needs_input_stops_before_fix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             bridge = FakeBridge(["NEEDS_INPUT\nplease provide stack trace"])
