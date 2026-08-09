@@ -110,9 +110,9 @@ See [LICENSE](LICENSE).
 
 # 牛马自救中心 (niuma) · 中文说明
 
-把需求丢进飞书，让 Agent 替你加班。
+把 Bug 或需求丢进局域网页面，也可以选择接入飞书、禅道、Jira 或 Slack，让 Agent 替你加班。
 
-飞书多维表格做任务池 + 状态机，本地 Go 常驻进程监听消息、调度 Cursor / Claude / Codex / Gemini。
+本地 SQLite 是任务主库和状态机；第三方平台是可选的录入、同步和通知连接器。本地 Go 常驻进程调度 Cursor / Claude / Codex / Gemini。
 需求走澄清 → 开发 → Review；Bug 由 Python LangGraph 编排调查 → 修复 → 测试 → 独立 Review → 有界返修。
 
 > **控制面已是 Go 实现**；Bug 的有状态返修环由 [`buggraph/`](buggraph/) 中的 Python LangGraph
@@ -120,13 +120,16 @@ See [LICENSE](LICENSE).
 
 ## 它能做什么
 
-- 飞书私聊机器人收需求 → 写入多维表格，进「需求池」
+- 局域网页面直接收 Bug，本地保存并进入任务池；飞书可选接入
 - **需求池多选**：发来的需求先攒在「待选择」，一张多选卡片让你勾选要做的几条、一次确认（`PIPELINE_SETUP_GATE=0` 可关，直接开跑）
 - 自动澄清（产出 PRD 或追问，多条**并行**）、人工确认后进「待开发」队列
 - **合批开发**：点「开始开发本批」把同工作区的多条需求合并成**一次** Agent 调用，开发完停在「待合并」由人决定 Review
 - 飞书命令：`需求池` `开始开发` `看板` `状态` `配置` `健康` `统计` `周报` `重试` `解除阻塞` …
 - **Bug 最小链路**：`Bug@codex：现象`（或 `@cursor`）→ 强制独立 worktree → 测试通过 → 另一 Agent Review → 人工合并；测试失败会返修并在达到上限后阻塞
-- **局域网 Bug 收件台**：浏览器直接录入、附图、修改和启动 Bug，数据仍写入同一张飞书多维表格；默认监听 `:8787`，无需登录
+- **局域网任务中心**：页面按 `Bug / 需求` 页签分流；Bug 走调查修复链路，需求走澄清、人工确认、开发、Review 和人工合并；两边都支持附件、修改、进度与归档
+- **管理控制台**：管理本地任务、工作区、Agent 和第三方连接器；默认监听 `:8787`，无需登录
+- **可选飞书同步**：运行时启停、测试连接、立即同步；飞书异常不会阻塞本地任务或 Agent 流水线
+- **第三方集成中心 MVP**：管理禅道、Jira、Slack 配置，测试远端 Token；禅道/Jira Webhook 经过 Token 校验和幂等去重后进入本地事件队列
 - agent 瞬时网络错自动重试、卡死看门狗、阻塞主动告警卡片
 - 默认 **inline 模式**（所有需求在目标仓库当前工作树上改、人工决定提交）；也可按工作区切 `worktree`（各自独立目录/分支、自动 push/PR/MR）。本地 SQLite 记录执行锁/去重/重试
 
@@ -136,7 +139,8 @@ See [LICENSE](LICENSE).
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 填好飞书凭据、Base 标识、目标仓库路径。
+复制 `.env.example` 为 `.env` 并配置目标仓库。飞书凭据和 Base 标识均为可选，也可以之后在 `/manage` 管理控制台中填写。
 多工作区 / SCM 见 `workspaces.example.json`。飞书应用权限与事件订阅见 [docs/feishu-app-setup.md](docs/feishu-app-setup.md)。
+第三方连接器当前能力和配置方式见 [docs/third-party-integrations.md](docs/third-party-integrations.md)。
 
 > 注：`docs/` 下其余文档为早期 Python 版部署说明，正在迁移；以 [go/README.md](go/README.md) 为准。

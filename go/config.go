@@ -110,7 +110,7 @@ type Config struct {
 	FailureLimit, PollInterval, MaxConcurrency          int
 	AgentRetries, AgentRunsKeep                         int
 	SetupGate, GateRelative, PushEnabled, PREnabled     bool
-	WebEnabled                                          bool
+	WebEnabled, FeishuEnabled                           bool
 	BatchDevelop, BatchClarify, InlineSkipGate          bool
 
 	Root, StateDir, WorktreeBase, WorkspacesFile string
@@ -155,11 +155,12 @@ func loadConfig() *Config {
 		AgentRetries:     envInt("PIPELINE_AGENT_RETRIES", 2),
 		AgentRunsKeep:    envInt("PIPELINE_AGENT_RUNS_KEEP", 200),
 
-		SetupGate:    envBool("PIPELINE_SETUP_GATE", true),
-		GateRelative: envBool("PIPELINE_GATE_RELATIVE", true),
-		PushEnabled:  envBool("PIPELINE_PUSH_ENABLED", false),
-		PREnabled:    envBool("PIPELINE_PR_ENABLED", false),
-		WebEnabled:   envBool("NIUMA_WEB_ENABLED", true),
+		SetupGate:     envBool("PIPELINE_SETUP_GATE", true),
+		GateRelative:  envBool("PIPELINE_GATE_RELATIVE", true),
+		PushEnabled:   envBool("PIPELINE_PUSH_ENABLED", false),
+		PREnabled:     envBool("PIPELINE_PR_ENABLED", false),
+		WebEnabled:    envBool("NIUMA_WEB_ENABLED", true),
+		FeishuEnabled: envBool("NIUMA_FEISHU_ENABLED", feishuConfiguredFromEnv()),
 		// inline 默认：多需求合批成一次 agent 调用，跳过自动测试门，开发完停在「待合并」由人决定 Review。
 		BatchDevelop:   envBool("PIPELINE_BATCH_DEVELOP", true),
 		BatchClarify:   envBool("PIPELINE_BATCH_CLARIFY", true),
@@ -214,19 +215,32 @@ func (c *Config) agentTimeout() int {
 
 func (c *Config) validate() error {
 	var missing []string
-	if c.BaseToken == "" {
-		missing = append(missing, "PIPELINE_BASE_TOKEN")
+	if c.FeishuEnabled {
+		for name, value := range map[string]string{
+			"FEISHU_APP_ID": c.AppID, "FEISHU_APP_SECRET": c.AppSecret,
+			"PIPELINE_BASE_TOKEN": c.BaseToken, "PIPELINE_TABLE_ID": c.TableID,
+		} {
+			if strings.TrimSpace(value) == "" {
+				missing = append(missing, name)
+			}
+		}
 	}
-	if c.TableID == "" {
-		missing = append(missing, "PIPELINE_TABLE_ID")
-	}
-	if c.RepoPath == "" {
+	if c.RepoPath == "" && len(loadWorkspaces().Items) == 0 {
 		missing = append(missing, "PIPELINE_REPO_PATH")
 	}
 	if len(missing) > 0 {
 		return errf("缺少必填配置 %v：在 .env 设置（参考 .env.example）", missing)
 	}
 	return nil
+}
+
+func feishuConfiguredFromEnv() bool {
+	for _, name := range []string{"FEISHU_APP_ID", "FEISHU_APP_SECRET", "PIPELINE_BASE_TOKEN", "PIPELINE_TABLE_ID"} {
+		if strings.TrimSpace(os.Getenv(name)) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Config) validateSchemaCommand() error {

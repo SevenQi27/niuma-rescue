@@ -232,6 +232,14 @@ GitLab 工作区示例：
 
 `worktree_base` 可为该工作区指定独立目录。每个任务会从最新远端基线创建不跟踪主线的本地分支，并检出到该目录下的独立文件夹，适合并发 Agent 使用。`rules_source` 会把来源目录中的 `AGENTS.md` 和 `.claude/rules` 链接到每个新 worktree；这些路径应在目标仓库中保持忽略，避免进入功能提交。
 
+## 本地任务库与可选飞书
+
+任务始终保存在 `PIPELINE_STATE_DIR/niuma.sqlite3`。`NIUMA_FEISHU_ENABLED=0` 可强制使用纯本地模式；若未设置该变量，则只有在 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`PIPELINE_BASE_TOKEN`、`PIPELINE_TABLE_ID` 四项齐全时才自动启用飞书。
+
+浏览器访问 `/manage` 可以运行时启停飞书、测试连接和立即同步。非密钥设置与 App Secret 保存在 Git 忽略的 `state/integration.json`，接口只返回脱敏值。关闭飞书不会删除本地记录；重新启用后会推送待同步任务并导入 Base 中尚未存在于本地的记录。
+
+当前管理控制台没有身份认证，只能部署在可信局域网，禁止直接暴露到公网。
+
 要求本机已安装并登录 `glab`。如果 `gitlab_repo` 留空，`glab` 会从当前 git remote 推断项目。
 
 SVN 工作区示例：

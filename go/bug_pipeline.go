@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -42,14 +44,26 @@ type bugGraphOutput struct {
 	Iteration    int    `json:"iteration"`
 }
 
-func runBugGraph(input bugGraphInput, runID string, st *Store) (bugGraphOutput, error) {
+func runBugGraph(parent context.Context, input bugGraphInput, runID string, st *Store) (bugGraphOutput, error) {
 	payload, err := json.Marshal(input)
 	if err != nil {
 		return bugGraphOutput{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.TimeoutBug)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(cfg.TimeoutBug)*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, cfg.BugGraphPython, "-m", "buggraph")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = cfg.BugGraphDir
 	env := replaceEnv(scrubbedEnv(), "PYTHONPATH", filepath.Join(cfg.BugGraphDir, "src"))
 	cmd.Env = replaceEnv(env, "LANGGRAPH_STRICT_MSGPACK", "true")
@@ -68,6 +82,9 @@ func runBugGraph(input bugGraphInput, runID string, st *Store) (bugGraphOutput, 
 		select {
 		case err := <-done:
 			if err != nil {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return bugGraphOutput{}, context.Canceled
+				}
 				return bugGraphOutput{}, errf("LangGraph 失败: %s", trunc(strings.TrimSpace(stderr.String()), 1200))
 			}
 			var output bugGraphOutput
@@ -81,6 +98,9 @@ func runBugGraph(input bugGraphInput, runID string, st *Store) (bugGraphOutput, 
 				st.heartbeat(runID)
 			}
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return bugGraphOutput{}, context.Canceled
+			}
 			return bugGraphOutput{}, errf("LangGraph 总超时（%ds）", cfg.TimeoutBug)
 		}
 	}
@@ -135,6 +155,16 @@ func (a *App) handleBug(rec *Record, runID string) {
 	rid := rec.RecordID
 	chat := fieldText(rec.Fields[FChat])
 	ws := a.workspaceFor(rec)
+	runCtx, stop := context.WithCancel(context.Background())
+	if _, loaded := a.bugRuns.LoadOrStore(rid, stop); loaded {
+		stop()
+		a.blockBug(rec, "同一 Bug 已有正在运行的任务")
+		return
+	}
+	defer func() {
+		stop()
+		a.bugRuns.Delete(rid)
+	}()
 	resetBugProgress(cfg.StateDir, rid)
 	appendBugProgress(cfg.StateDir, rid, "prepare", "running", "Niuma", "正在从目标基线准备独立修复目录", 0)
 	if !strings.EqualFold(ws.SCM, "git") {
@@ -147,6 +177,10 @@ func (a *App) handleBug(rec *Record, runID string) {
 	if err != nil {
 		appendBugProgress(cfg.StateDir, rid, "prepare", "failed", "Niuma", err.Error(), 0)
 		a.onFailure(rec, "Bug worktree: "+err.Error(), "")
+		return
+	}
+	if errors.Is(runCtx.Err(), context.Canceled) {
+		_ = a.advance(rec, SBlocked, "[manual] 已从管理页停止任务 → 已阻塞", map[string]any{})
 		return
 	}
 	appendBugProgress(cfg.StateDir, rid, "prepare", "done", "Niuma", "隔离目录已就绪："+branch, 0)
@@ -171,8 +205,13 @@ func (a *App) handleBug(rec *Record, runID string) {
 	}
 	a.fs.notify(chat, "🐛 Bug 流水线启动："+fix+" 调查/修复 → 测试 → "+review+" 独立 Review；改动位于 "+branch+"。")
 	emit("dispatcher", "buggraph_start", map[string]any{"record_id": rid, "fix_agent": fix, "review_agent": review, "worktree": wt})
-	output, err := runBugGraph(input, runID, a.st)
+	output, err := runBugGraph(runCtx, input, runID, a.st)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			appendBugProgress(cfg.StateDir, rid, "pipeline", "failed", "Niuma", "任务已由管理页人工停止", 0)
+			_ = a.advance(rec, SBlocked, "[manual] 已从管理页停止任务 → 已阻塞", map[string]any{})
+			return
+		}
 		appendBugProgress(cfg.StateDir, rid, "pipeline", "failed", "Niuma", err.Error(), 0)
 		a.onFailure(rec, err.Error(), "")
 		return
@@ -228,4 +267,13 @@ func (a *App) handleBug(rec *Record, runID string) {
 		}
 		a.blockBug(rec, reason)
 	}
+}
+
+func (a *App) stopBug(recordID string) bool {
+	value, ok := a.bugRuns.Load(recordID)
+	if !ok {
+		return false
+	}
+	value.(context.CancelFunc)()
+	return true
 }

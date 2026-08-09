@@ -29,6 +29,7 @@ type bugRecordStore interface {
 
 type bugConsole struct {
 	fs       bugRecordStore
+	app      *App
 	stateDir string
 	fire     func()
 	clearRun func(string)
@@ -66,6 +67,9 @@ type webBug struct {
 	Images        []webBugImage `json:"images"`
 	Editable      bool          `json:"editable"`
 	Startable     bool          `json:"startable"`
+	SyncState     string        `json:"sync_state"`
+	SyncError     string        `json:"sync_error"`
+	ExternalID    string        `json:"external_id"`
 }
 
 type webBugInput struct {
@@ -81,6 +85,7 @@ type webBugInput struct {
 func (a *App) serveWeb(fire func()) error {
 	console := &bugConsole{
 		fs:       a.fs,
+		app:      a,
 		stateDir: cfg.StateDir,
 		fire:     fire,
 		clearRun: func(recordID string) {
@@ -116,8 +121,19 @@ func (c *bugConsole) handler() http.Handler {
 	mux.HandleFunc("/assets/app.css", c.serveCSS)
 	mux.HandleFunc("/assets/app.js", c.serveJS)
 	mux.HandleFunc("/api/meta", c.handleMeta)
+	mux.HandleFunc("/api/tasks", c.handleTasks)
+	mux.HandleFunc("/api/tasks/", c.handleTask)
 	mux.HandleFunc("/api/bugs", c.handleBugs)
 	mux.HandleFunc("/api/bugs/", c.handleBug)
+	mux.HandleFunc("/api/admin/overview", c.handleAdminOverview)
+	mux.HandleFunc("/api/admin/integration", c.handleAdminIntegration)
+	mux.HandleFunc("/api/admin/integration/test", c.handleAdminIntegrationTest)
+	mux.HandleFunc("/api/admin/integration/sync", c.handleAdminIntegrationSync)
+	mux.HandleFunc("/api/admin/integrations", c.handleAdminIntegrations)
+	mux.HandleFunc("/api/admin/integrations/", c.handleAdminIntegrationConnector)
+	mux.HandleFunc("/api/integrations/", c.handleIntegrationEvent)
+	mux.HandleFunc("/api/admin/pipeline", c.handleAdminPipeline)
+	mux.HandleFunc("/api/admin/workspaces", c.handleAdminWorkspaces)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -130,7 +146,7 @@ func (c *bugConsole) handler() http.Handler {
 }
 
 func (c *bugConsole) serveIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" || r.Method != http.MethodGet {
+	if (r.URL.Path != "/" && r.URL.Path != "/manage") || r.Method != http.MethodGet {
 		http.NotFound(w, r)
 		return
 	}
@@ -179,7 +195,9 @@ func (c *bugConsole) handleMeta(w http.ResponseWriter, r *http.Request) {
 	writeWebJSON(w, http.StatusOK, map[string]any{
 		"workspaces":        keys,
 		"default_workspace": defaultKey,
-		"agents":            []string{"codex", "cursor"},
+		"agents":            []string{"codex", "cursor", "claude", "gemini"},
+		"record_source":     "local",
+		"integration":       c.integrationStatus(),
 	})
 }
 
@@ -208,6 +226,22 @@ func (c *bugConsole) handleBug(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "start" && r.Method == http.MethodPost {
 		c.startBug(w, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "stop" && r.Method == http.MethodPost {
+		c.stopBug(w, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "retry" && r.Method == http.MethodPost {
+		c.retryBug(w, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "complete" && r.Method == http.MethodPost {
+		c.completeBug(w, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "archive" && r.Method == http.MethodPost {
+		c.archiveBug(w, id)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "pipeline" && r.Method == http.MethodGet {
@@ -241,13 +275,21 @@ func (c *bugConsole) getBugPipeline(w http.ResponseWriter, id string) {
 func (c *bugConsole) listBugs(w http.ResponseWriter) {
 	records, err := c.fs.listRecords()
 	if err != nil {
-		writeWebError(w, http.StatusBadGateway, "读取飞书 Bug 失败："+err.Error())
+		writeWebError(w, http.StatusBadGateway, "读取 Bug 失败："+err.Error())
 		return
 	}
 	bugs := make([]webBug, 0, len(records))
 	for i := range records {
 		if isBugRecord(&records[i]) {
-			bugs = append(bugs, webBugFromRecord(&records[i]))
+			bug := webBugFromRecord(&records[i])
+			if provider, ok := c.fs.(interface {
+				recordMeta(string) (recordSyncMeta, error)
+			}); ok {
+				if meta, metaErr := provider.recordMeta(records[i].RecordID); metaErr == nil {
+					bug.SyncState, bug.SyncError, bug.ExternalID = meta.SyncState, meta.SyncError, meta.ExternalID
+				}
+			}
+			bugs = append(bugs, bug)
 		}
 	}
 	order := map[string]int{SBlocked: 0, SAnswer: 1, SSetup: 2, SBug: 3, SReview: 4, SMerge: 5, SDone: 6}
@@ -318,16 +360,16 @@ func storedWebImages(log string) []storedWebImage {
 
 func (c *bugConsole) uploadBugImages(w http.ResponseWriter, r *http.Request, id string) {
 	if !safeWebRecordID(id) {
-		writeWebError(w, http.StatusBadRequest, "Bug ID 无效")
+		writeWebError(w, http.StatusBadRequest, "任务 ID 无效")
 		return
 	}
-	rec, err := c.findBug(id)
+	rec, err := c.findTask(id)
 	if err != nil {
 		writeWebError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	status := fieldText(rec.Fields[FStatus])
-	if !webBugEditable(status) {
+	if !webTaskEditable(rec) {
 		writeWebError(w, http.StatusConflict, "当前状态「"+status+"」不能添加附件")
 		return
 	}
@@ -346,7 +388,7 @@ func (c *bugConsole) uploadBugImages(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	if len(existing)+len(files) > maxWebImages {
-		writeWebError(w, http.StatusBadRequest, "每个 Bug 最多上传 5 个附件")
+		writeWebError(w, http.StatusBadRequest, "每个任务最多上传 5 个附件")
 		return
 	}
 	dir := filepath.Join(c.stateDir, "bug-images", id)
@@ -402,7 +444,7 @@ func (c *bugConsole) uploadBugImages(w http.ResponseWriter, r *http.Request, id 
 		saved = append(saved, path)
 		name := singleLine(filepath.Base(header.Filename), 120)
 		if name == "" {
-			name = "Bug 附件"
+			name = "任务附件"
 		}
 		added = append(added, storedWebImage{File: storedName, Name: name, MIME: mimeType})
 	}
@@ -414,11 +456,11 @@ func (c *bugConsole) uploadBugImages(w http.ResponseWriter, r *http.Request, id 
 	logText = strings.TrimSpace(logText+"\n[web] 已添加 "+itoa(len(added))+" 个附件") + "\n"
 	if err := c.fs.updateRecord(id, map[string]any{FLog: logText}); err != nil {
 		cleanup()
-		writeWebError(w, http.StatusBadGateway, "关联 Bug 附件失败："+err.Error())
+		writeWebError(w, http.StatusBadGateway, "关联任务附件失败："+err.Error())
 		return
 	}
 	rec.Fields[FLog] = logText
-	writeWebJSON(w, http.StatusOK, map[string]any{"bug": webBugFromRecord(rec)})
+	writeWebJSON(w, http.StatusOK, map[string]any{"task": webTaskFromRecord(rec), "bug": webBugFromRecord(rec)})
 }
 
 func (c *bugConsole) serveBugImage(w http.ResponseWriter, id, fileName string) {
@@ -426,7 +468,7 @@ func (c *bugConsole) serveBugImage(w http.ResponseWriter, id, fileName string) {
 		http.NotFound(w, nil)
 		return
 	}
-	rec, err := c.findBug(id)
+	rec, err := c.findTask(id)
 	if err != nil {
 		writeWebError(w, http.StatusNotFound, "附件不存在")
 		return
@@ -581,7 +623,7 @@ func (c *bugConsole) createBug(w http.ResponseWriter, r *http.Request) {
 	}
 	created, err := c.fs.createRecord(fields)
 	if err != nil {
-		writeWebError(w, http.StatusBadGateway, "创建飞书 Bug 失败："+err.Error())
+		writeWebError(w, http.StatusBadGateway, "创建 Bug 失败："+err.Error())
 		return
 	}
 	if input.Start && c.fire != nil {
@@ -621,7 +663,7 @@ func (c *bugConsole) updateBug(w http.ResponseWriter, r *http.Request, id string
 		FLog:         appendWebLog(rec, "[web] Bug 内容已修改"),
 	}
 	if err := c.fs.updateRecord(id, fields); err != nil {
-		writeWebError(w, http.StatusBadGateway, "更新飞书 Bug 失败："+err.Error())
+		writeWebError(w, http.StatusBadGateway, "更新 Bug 失败："+err.Error())
 		return
 	}
 	for key, value := range fields {
@@ -665,7 +707,7 @@ func (c *bugConsole) startBug(w http.ResponseWriter, id string) {
 func (c *bugConsole) findBug(id string) (*Record, error) {
 	records, err := c.fs.listRecords()
 	if err != nil {
-		return nil, errf("读取飞书 Bug 失败：%v", err)
+		return nil, errf("读取 Bug 失败：%v", err)
 	}
 	rec := findByID(records, id)
 	if rec == nil || !isBugRecord(rec) {

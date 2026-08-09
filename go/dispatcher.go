@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,11 +12,16 @@ import (
 )
 
 type App struct {
-	fs      *Feishu
-	st      *Store
-	sem     chan struct{} // 并发上限
-	gitMu   sync.Mutex    // 串行化共享 base 仓库上的 worktree 操作
-	wsLocks sync.Map      // workspace key -> *sync.Mutex：inline 工作区共享同一棵树，按工作区串行
+	fs             recordBackend
+	records        *hybridRecords
+	integrations   *integrationHub
+	st             *Store
+	sem            chan struct{} // 并发上限
+	gitMu          sync.Mutex    // 串行化共享 base 仓库上的 worktree 操作
+	wsLocks        sync.Map      // workspace key -> *sync.Mutex：inline 工作区共享同一棵树，按工作区串行
+	bugRuns        sync.Map      // record id -> context.CancelFunc，供管理页精确停止单条 Bug
+	listenerMu     sync.Mutex
+	listenerCancel context.CancelFunc
 }
 
 // wsLock 返回某工作区的互斥锁（懒创建）。inline 模式下同一工作区同一时刻只允许一条/一批需求在跑。
