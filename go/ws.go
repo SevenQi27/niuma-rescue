@@ -13,7 +13,7 @@ import (
 )
 
 // startListener 起飞书长连接（消息 + 卡片回调走同一条 WS，无需公网 URL）。阻塞。
-func (a *App) startListener(trigger func()) {
+func (a *App) startListener(ctx context.Context, trigger func(), settings integrationSettings) {
 	h := dispatcher.NewEventDispatcher("", "").
 		OnP2MessageReceiveV1(func(ctx context.Context, e *larkim.P2MessageReceiveV1) error {
 			a.onMessage(e, trigger)
@@ -24,29 +24,62 @@ func (a *App) startListener(trigger func()) {
 		}).
 		// 应用订阅了"消息已读"事件但我们不处理；注册空 handler 免得 SDK 刷 ERROR 日志。
 		OnP2MessageReadV1(func(ctx context.Context, e *larkim.P2MessageReadV1) error { return nil })
-	cli := larkws.NewClient(cfg.AppID, cfg.AppSecret, larkws.WithEventHandler(h))
+	cli := larkws.NewClient(settings.AppID, settings.AppSecret, larkws.WithEventHandler(h))
 
 	// 心跳：每 60s 记一次"还活着"，供 `健康`/doctor 判断 listener 是否在跑。
 	go func() {
 		for {
-			time.Sleep(60 * time.Second)
-			emit("listener", "alive", nil)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(60 * time.Second):
+				emit("listener", "alive", nil)
+			}
 		}
 	}()
 
 	emit("listener", "starting", nil)
 	for {
+		if ctx.Err() != nil {
+			emit("listener", "disabled", nil)
+			return
+		}
 		elog("连接飞书长连接，监听消息 + 卡片回调 …")
-		if err := cli.Start(context.Background()); err != nil {
+		if err := cli.Start(ctx); err != nil {
+			if ctx.Err() != nil {
+				emit("listener", "disabled", nil)
+				return
+			}
 			elog("listener 退出: %v，5s 后重连", err)
 			emit("listener", "stopped", map[string]any{"error": err.Error()})
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
 			continue
 		}
 		elog("listener 返回 nil，主进程保持常驻")
 		emit("listener", "ready", nil)
 		select {}
 	}
+}
+
+func (a *App) restartListener(trigger func()) {
+	a.listenerMu.Lock()
+	defer a.listenerMu.Unlock()
+	if a.listenerCancel != nil {
+		a.listenerCancel()
+		a.listenerCancel = nil
+	}
+	settings := a.records.currentSettings()
+	if !settings.Enabled || !integrationConfigured(settings) {
+		emit("listener", "disabled", nil)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.listenerCancel = cancel
+	go a.startListener(ctx, trigger, settings)
 }
 
 func (a *App) onMessage(e *larkim.P2MessageReceiveV1, trigger func()) {

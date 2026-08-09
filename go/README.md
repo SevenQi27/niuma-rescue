@@ -1,20 +1,26 @@
 # niuma（Go 实现）
 
-把需求丢进飞书，Agent 替你澄清 → 开发 → Review → 交付。
+把任务丢进局域网页面或可选的飞书连接器，Agent 替你澄清 → 开发 → Review → 交付。
 listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 Bug 返修环会启动本地 Python LangGraph 子进程。
 
-## 局域网 Bug 收件台
+任务主数据保存在本机 `state/niuma.sqlite3`。飞书不再是启动必需项：未配置或关闭飞书时，页面、调度器和 Agent 仍可独立运行；启用后负责导入飞书记录、回写状态和发送通知。
 
-服务默认同时监听 `:8787`，局域网用户访问 `http://<这台机器的局域网 IP>:8787` 后可以：
+## 局域网任务中心
+
+服务默认同时监听 `:8787`，局域网用户访问 `http://<这台机器的局域网 IP>:8787` 后，可以在 `Bug / 需求` 两个页签中分别录入和管理任务：
 
 - 新建 Bug，选择代码工作区和 Codex/Cursor 修复 Agent；
 - 上传图片、PDF、Excel 或 CSV 附件；图片可预览、文档可打开或下载，Agent 会在 Bug 档案中读取附件；
 - 在「待选择 / 待回答 / 已阻塞」阶段修改描述和补充信息；
 - 确认后启动既有的 worktree → 修复 → 测试 → 独立 Review → 人工合并路线；
-- 查看飞书多维表格中同一批 Bug 的状态和执行日志；
+- 查看本机任务库中的状态和执行日志，启用飞书后自动同步；
 - 在 Bug 卡片内展开 AI 执行过程，实时查看各阶段状态及 Agent 调查、修复、验证和 Review 结果。
+- 在需求页签完成录入、AI 澄清、人工确认、开始开发、独立 Review 和人工合并，并查看 PRD 与阶段进度。
+- 打开 `/manage` 管理任务停止/重试/完成/归档、飞书/禅道/Jira/Slack 连接、默认 Agent 和工作区。
 
-页面和 API 无需登录，飞书凭据仍只保留在服务端，不会发送到浏览器。此入口使用普通 HTTP，只适合可信局域网，不应直接暴露公网；如需公网访问，应在前面增加 HTTPS 和身份认证。`NIUMA_WEB_ENABLED=0` 可完全关闭。
+页面和 API 按当前部署要求不设登录。连接器密钥只保存在服务端，管理 API 不回传明文；飞书设置位于 `state/integration.json`，其他连接器位于权限为 `0600` 的 `state/integrations.json`，均不进入 Git。此入口使用普通 HTTP，只适合可信局域网，不应直接暴露公网。`NIUMA_WEB_ENABLED=0` 可完全关闭。
+
+第三方集成中心当前支持连接配置、远端 API Token 测试、工作区映射，以及禅道/Jira Webhook 的验 Token、幂等去重和本地事件入队。事件到任务的完整字段拉取、双向状态回写和 Slack Socket Mode 消费仍是后续阶段，详见 [../docs/third-party-integrations.md](../docs/third-party-integrations.md)。
 
 ---
 
@@ -26,8 +32,7 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 - 至少一个**可无头运行的 Agent CLI**，并已登录可用：
   - 默认 `cursor-agent`（澄清/开发/Review 默认都用 cursor）
   - 也支持 `claude` / `codex` / `gemini`，按需在 `.env` 或飞书里切换
-- 一个**飞书自建应用**（开通多维表格读写 + IM 发消息 + 长连接接收私聊），
-  详见 [../docs/feishu-app-setup.md](../docs/feishu-app-setup.md)
+- 可选：一个**飞书自建应用**（开通多维表格读写 + IM 发消息 + 长连接接收私聊），详见 [../docs/feishu-app-setup.md](../docs/feishu-app-setup.md)
 
 ---
 

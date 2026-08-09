@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,8 +26,36 @@ type Feishu struct {
 }
 
 type Record struct {
-	RecordID string         `json:"record_id"`
-	Fields   map[string]any `json:"fields"`
+	RecordID         string         `json:"record_id"`
+	Fields           map[string]any `json:"fields"`
+	LastModifiedTime flexibleInt64  `json:"last_modified_time,omitempty"`
+}
+
+type flexibleInt64 int64
+
+func (v *flexibleInt64) UnmarshalJSON(data []byte) error {
+	raw := strings.Trim(strings.TrimSpace(string(data)), `"`)
+	if raw == "" || raw == "null" {
+		*v = 0
+		return nil
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return err
+	}
+	*v = flexibleInt64(parsed)
+	return nil
+}
+
+type recordBackend interface {
+	listRecords() ([]Record, error)
+	createRecord(fields map[string]any) (*Record, error)
+	updateRecord(recordID string, fields map[string]any) error
+	sendText(chatID, text string) error
+	sendCard(chatID string, card map[string]any) (string, error)
+	patchCard(messageID string, card map[string]any) error
+	notify(chatID, text string)
+	notifyCard(chatID string, card map[string]any)
 }
 
 func newFeishu(c *Config) *Feishu {
@@ -110,18 +140,31 @@ func (f *Feishu) recBase() string {
 }
 
 func (f *Feishu) listRecords() ([]Record, error) {
-	// MVP 不分页（量小）。需要时加 page_size/page_token。
-	data, err := f.api("GET", f.recBase()+"?page_size=500", nil)
-	if err != nil {
-		return nil, err
+	var records []Record
+	pageToken := ""
+	for {
+		q := url.Values{"page_size": {"500"}}
+		if pageToken != "" {
+			q.Set("page_token", pageToken)
+		}
+		data, err := f.api("GET", f.recBase()+"?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		var d struct {
+			Items     []Record `json:"items"`
+			HasMore   bool     `json:"has_more"`
+			PageToken string   `json:"page_token"`
+		}
+		if err := json.Unmarshal(data, &d); err != nil {
+			return nil, err
+		}
+		records = append(records, d.Items...)
+		if !d.HasMore || d.PageToken == "" {
+			return records, nil
+		}
+		pageToken = d.PageToken
 	}
-	var d struct {
-		Items []Record `json:"items"`
-	}
-	if err := json.Unmarshal(data, &d); err != nil {
-		return nil, err
-	}
-	return d.Items, nil
 }
 
 func (f *Feishu) updateRecord(recordID string, fields map[string]any) error {

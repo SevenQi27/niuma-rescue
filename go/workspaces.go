@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -45,20 +46,85 @@ type wsItem struct {
 
 var (
 	wsCache *wsFile
-	wsOnce  sync.Once
+	wsMu    sync.RWMutex
 )
 
-// loadWorkspaces 只完整初始化一次（sync.Once）：避免并发首调时读到半填充的缓存，
-// 否则不同 goroutine 解析出的工作区/锁 key 会不一致，按工作区的串行锁形同虚设。
+// loadWorkspaces 通过读写锁完成并发安全的懒加载；管理页保存后可直接替换缓存，
+// 不需要重启服务，同时避免并发首调时读到半填充的配置。
 func loadWorkspaces() *wsFile {
-	wsOnce.Do(func() {
+	wsMu.RLock()
+	if wsCache != nil {
+		defer wsMu.RUnlock()
+		return wsCache
+	}
+	wsMu.RUnlock()
+	wsMu.Lock()
+	defer wsMu.Unlock()
+	if wsCache == nil {
 		c := &wsFile{Items: map[string]wsItem{}}
 		if b, err := os.ReadFile(cfg.WorkspacesFile); err == nil {
-			json.Unmarshal(b, c)
+			_ = json.Unmarshal(b, c)
+		}
+		if c.Items == nil {
+			c.Items = map[string]wsItem{}
 		}
 		wsCache = c
-	})
+	}
 	return wsCache
+}
+
+func workspaceConfigSnapshot() wsFile {
+	f := loadWorkspaces()
+	out := wsFile{Default: f.Default, Items: make(map[string]wsItem, len(f.Items))}
+	for key, item := range f.Items {
+		out.Items[key] = item
+	}
+	return out
+}
+
+func saveWorkspaceConfig(next wsFile) error {
+	if len(next.Items) == 0 {
+		return errf("至少保留一个工作区")
+	}
+	if _, ok := next.Items[next.Default]; !ok {
+		return errf("默认工作区 `%s` 不存在", next.Default)
+	}
+	keyRe := regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	for key, item := range next.Items {
+		if !keyRe.MatchString(key) {
+			return errf("工作区 key `%s` 只能包含字母、数字、点、下划线和短横线", key)
+		}
+		if !filepath.IsAbs(item.Path) {
+			return errf("工作区 `%s` 的 path 必须是绝对路径", key)
+		}
+		if _, err := os.Stat(item.Path); err != nil {
+			return errf("工作区 `%s` 路径不可用: %v", key, err)
+		}
+		if item.SCM != "" && item.SCM != "git" && item.SCM != "svn" {
+			return errf("工作区 `%s` 的 scm 只能是 git 或 svn", key)
+		}
+		if item.WorkMode != "" && item.WorkMode != "inline" && item.WorkMode != "worktree" {
+			return errf("工作区 `%s` 的 work_mode 只能是 inline 或 worktree", key)
+		}
+	}
+	b, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.WorkspacesFile), 0o755); err != nil {
+		return err
+	}
+	tmp := cfg.WorkspacesFile + ".tmp"
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, cfg.WorkspacesFile); err != nil {
+		return err
+	}
+	wsMu.Lock()
+	wsCache = &next
+	wsMu.Unlock()
+	return nil
 }
 
 // defaultWorkspace 从 .env 合成（没有 workspaces.json 时）。

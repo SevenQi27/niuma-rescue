@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#6d4aff">
-  <title>Niuma Bug 收件台</title>
-  <meta name="description" content="局域网里的 Bug 录入、修改与 AI 修复入口">
+  <title>Niuma 任务中心</title>
+  <meta name="description" content="局域网里的 Bug 修复与需求开发入口">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/app.js" defer></script>
 </head>
@@ -18,37 +18,47 @@
     <header class="topbar">
       <a class="brand" href="#top" aria-label="返回页面顶部">
         <span class="brand-mark">N</span>
-        <span><strong>Niuma</strong><small>Bug 收件台</small></span>
+        <span><strong>Niuma</strong><small>任务中心</small></span>
       </a>
       <div class="top-actions">
-        <span class="live-pill"><i></i> 局域网在线</span>
-        <button class="icon-button" id="refreshButton" type="button" title="刷新 Bug">↻</button>
+        <span class="live-pill" id="dataMode"><i></i> 本地数据源</span>
+        <button class="button quiet manage-button" id="manageButton" type="button">管理控制台</button>
+        <button class="icon-button" id="refreshButton" type="button" title="刷新任务">↻</button>
       </div>
     </header>
 
     <main id="top">
+      <nav class="task-tabs" role="tablist" aria-label="任务类型">
+        <button class="task-tab is-active" id="bugTab" type="button" role="tab" aria-selected="true" data-task-tab="Bug">
+          <span class="tab-icon">🐛</span><span><b>Bug</b><small>调查、修复与 Review</small></span><em id="bugTabCount">0</em>
+        </button>
+        <button class="task-tab" id="requirementTab" type="button" role="tab" aria-selected="false" data-task-tab="需求">
+          <span class="tab-icon">✨</span><span><b>需求</b><small>澄清、开发与交付</small></span><em id="requirementTabCount">0</em>
+        </button>
+      </nav>
+
       <section class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">从问题描述到可审查修复</p>
-          <h1>发现问题，<br><span>交给流水线。</span></h1>
-          <p class="hero-lead">在这里录入或补充 Bug。开始后，Niuma 会创建独立 worktree，安排一个 Agent 修复、另一个 Agent Review，最后停在人工合并。</p>
-          <div class="flow-strip" aria-label="Bug 修复流程">
+          <p class="eyebrow" id="heroEyebrow">从问题描述到可审查修复</p>
+          <h1 id="heroTitle">发现问题，<br><span>交给流水线。</span></h1>
+          <p class="hero-lead" id="heroLead">在这里录入或补充 Bug。开始后，Niuma 会创建独立 worktree，安排一个 Agent 修复、另一个 Agent Review，最后停在人工合并。</p>
+          <div class="flow-strip" id="flowStrip" aria-label="Bug 修复流程">
             <span>录入</span><b>→</b><span>调查</span><b>→</b><span>修复</span><b>→</b><span>测试</span><b>→</b><span>Review</span><b>→</b><span>人工合并</span>
           </div>
         </div>
 
         <form class="create-card" id="bugForm">
           <div class="form-heading">
-            <div><span class="step-dot">+</span><div><h2>提交一个 Bug</h2><p>先保存还能继续修改，确认清楚后再开始修复。</p></div></div>
+            <div><span class="step-dot">+</span><div><h2 id="formTitle">提交一个 Bug</h2><p id="formDescription">先保存还能继续修改，确认清楚后再开始修复。</p></div></div>
           </div>
 
           <label for="bugTitle">一句话标题</label>
           <input id="bugTitle" name="title" maxlength="120" placeholder="例如：大金额折扣计算结果为负数" required>
 
-          <label for="bugDescription">现象、复现步骤和期望结果</label>
+          <label for="bugDescription" id="descriptionLabel">现象、复现步骤和期望结果</label>
           <textarea id="bugDescription" name="description" rows="7" maxlength="12000" placeholder="发生了什么？怎样复现？你期望看到什么？如有报错信息也请一起贴上。" required></textarea>
 
-          <label for="bugAttachments">现场附件</label>
+          <label for="bugAttachments">任务附件</label>
           <input id="bugAttachments" name="images" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,application/pdf,.xlsx,.xls,.csv" multiple>
           <p class="attachment-hint">最多 5 个，每个不超过 8MB；支持图片、PDF、Excel 和 CSV。</p>
           <div class="selected-attachments" id="bugAttachmentSelection"></div>
@@ -64,7 +74,7 @@
             </div>
           </div>
 
-          <fieldset>
+          <fieldset id="bugAgentFields">
             <legend>谁负责修复？</legend>
             <div class="agent-options">
               <label><input type="radio" name="fixAgent" value="codex" checked><span><b>Codex</b><small>Cursor 自动 Review</small></span></label>
@@ -72,9 +82,18 @@
             </div>
           </fieldset>
 
+          <fieldset id="requirementAgentFields" hidden>
+            <legend>每个阶段由谁负责？</legend>
+            <div class="agent-stage-grid">
+              <div><label for="requirementClarifyAgent">澄清 Agent</label><select id="requirementClarifyAgent"><option value="cursor">Cursor</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="gemini">Gemini</option></select></div>
+              <div><label for="requirementCodeAgent">开发 Agent</label><select id="requirementCodeAgent"><option value="cursor">Cursor</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="gemini">Gemini</option></select></div>
+              <div><label for="requirementReviewAgent">Review Agent</label><select id="requirementReviewAgent"><option value="gemini">Gemini</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="claude">Claude</option></select></div>
+            </div>
+          </fieldset>
+
           <div class="form-actions">
             <button class="button secondary" type="submit" data-start="false">先保存，稍后修改</button>
-            <button class="button primary" type="submit" data-start="true">保存并开始修复</button>
+            <button class="button primary" id="startSubmitButton" type="submit" data-start="true">保存并开始修复</button>
           </div>
           <p class="form-error" id="createError" role="alert"></p>
         </form>
@@ -82,7 +101,7 @@
 
       <section class="board-section" aria-labelledby="boardTitle">
         <div class="section-heading">
-          <div><p class="eyebrow">BUG BOARD</p><h2 id="boardTitle">问题处理进度</h2></div>
+          <div><p class="eyebrow" id="boardEyebrow">BUG BOARD</p><h2 id="boardTitle">问题处理进度</h2></div>
           <div class="summary" id="summary"></div>
         </div>
 
@@ -90,49 +109,142 @@
           <label class="search"><span>⌕</span><input id="searchInput" type="search" placeholder="搜索标题或描述"></label>
           <select id="statusFilter" aria-label="按状态筛选">
             <option value="">全部状态</option>
-            <option value="待选择">待选择</option>
-            <option value="待回答">待回答</option>
-            <option value="Bug处理中">处理中</option>
-            <option value="待合并">待合并</option>
-            <option value="已阻塞">已阻塞</option>
-            <option value="完成">已完成</option>
           </select>
         </div>
 
         <div class="bug-list" id="bugList" aria-live="polite"></div>
         <div class="empty-state" id="emptyState" hidden>
-          <span>☕</span><h3>这里还没有匹配的 Bug</h3><p>写清楚问题，剩下的交给流水线。</p>
+          <span id="emptyIcon">☕</span><h3 id="emptyTitle">这里还没有匹配的 Bug</h3><p id="emptyDescription">写清楚问题，剩下的交给流水线。</p>
         </div>
       </section>
     </main>
 
-    <footer><span>Niuma 只负责准备修复，不会自动合并代码。</span><span>数据与飞书多维表格实时共用</span></footer>
+    <footer><span>Niuma 会在人工卡点停下，不会自动合并代码。</span><span id="syncFooter">任务数据保存在本机 SQLite</span></footer>
   </div>
 
   <dialog id="editDialog">
     <form method="dialog" class="dialog-card" id="editForm">
       <div class="dialog-heading">
-        <div><p class="eyebrow">EDIT BUG</p><h2>修改 Bug</h2></div>
+        <div><p class="eyebrow" id="editEyebrow">EDIT BUG</p><h2 id="editHeading">修改 Bug</h2></div>
         <button class="close-button" value="cancel" aria-label="关闭">×</button>
       </div>
       <input type="hidden" id="editId">
+      <input type="hidden" id="editTaskType">
       <label for="editTitle">标题</label>
       <input id="editTitle" maxlength="120" required>
       <label for="editDescription">问题描述</label>
       <textarea id="editDescription" rows="8" maxlength="12000" required></textarea>
       <label for="editClarification">补充信息</label>
       <textarea id="editClarification" rows="4" placeholder="日志、截图文字、复现条件，或对 Agent 问题的回答"></textarea>
+      <div id="editPRDField" hidden>
+        <label for="editPRD">PRD / 验收标准</label>
+        <textarea id="editPRD" rows="7" placeholder="AI 澄清后会生成，也可以在人工确认前直接调整"></textarea>
+      </div>
       <label for="editAttachments">补充附件</label>
       <input id="editAttachments" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,application/pdf,.xlsx,.xls,.csv" multiple>
-      <p class="attachment-hint">可继续添加；每个 Bug 合计最多 5 个附件，每个不超过 8MB。</p>
+      <p class="attachment-hint">可继续添加；每个任务合计最多 5 个附件，每个不超过 8MB。</p>
       <div class="selected-attachments" id="editAttachmentSelection"></div>
-      <div class="form-grid">
+      <div class="form-grid" id="editBugAgentFields">
         <div><label for="editWorkspace">代码工作区</label><select id="editWorkspace" required></select></div>
         <div><label for="editAgent">修复 Agent</label><select id="editAgent"><option value="codex">Codex</option><option value="cursor">Cursor</option></select></div>
+      </div>
+      <div id="editRequirementAgentFields" hidden>
+        <label for="editRequirementWorkspace">代码工作区</label><select id="editRequirementWorkspace"></select>
+        <div class="agent-stage-grid">
+          <div><label for="editClarifyAgent">澄清 Agent</label><select id="editClarifyAgent"><option value="cursor">Cursor</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="gemini">Gemini</option></select></div>
+          <div><label for="editCodeAgent">开发 Agent</label><select id="editCodeAgent"><option value="cursor">Cursor</option><option value="codex">Codex</option><option value="claude">Claude</option><option value="gemini">Gemini</option></select></div>
+          <div><label for="editReviewAgent">Review Agent</label><select id="editReviewAgent"><option value="gemini">Gemini</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="claude">Claude</option></select></div>
+        </div>
       </div>
       <p class="form-error" id="editError" role="alert"></p>
       <div class="form-actions"><button class="button quiet" value="cancel">取消</button><button class="button primary" id="saveEditButton" value="default">保存修改</button></div>
     </form>
+  </dialog>
+
+  <dialog id="manageDialog" class="manage-dialog">
+    <div class="management-shell">
+      <div class="dialog-heading management-heading">
+        <div><p class="eyebrow">NIUMA CONTROL CENTER</p><h2>管理控制台</h2><p>任务、Agent、工作区和第三方平台都在这里管理。</p></div>
+        <button class="close-button" id="closeManageButton" type="button" aria-label="关闭">×</button>
+      </div>
+
+      <div class="admin-notice">当前版本按要求不做鉴权，请只在可信局域网使用。</div>
+      <div class="admin-overview" id="adminOverview"><div class="admin-loading">正在读取运行状态…</div></div>
+
+      <section class="admin-section">
+        <div class="admin-section-heading"><div><p class="eyebrow">INTEGRATION HUB</p><h3>第三方集成</h3></div><span id="integrationHubBadge" class="admin-badge">读取中</span></div>
+        <p class="admin-description">本地 SQLite 和 Go 状态机继续作为主控。连接器只负责收任务、映射工作区、接收回调和推送通知，单个平台异常不会阻塞 Agent 流水线。</p>
+
+        <div class="connector-grid" id="connectorGrid"><div class="admin-loading">正在读取连接器…</div></div>
+
+        <div class="connector-editor-shell">
+          <div class="connector-editor-heading">
+            <div class="connector-avatar" id="connectorEditorIcon">飞</div>
+            <div><p class="eyebrow" id="connectorEditorEyebrow">TASK + MESSAGE CONNECTOR</p><h4 id="connectorEditorTitle">配置飞书</h4><p id="connectorEditorDescription">多维表格同步、消息卡片和长连接接入。</p></div>
+            <span id="integrationBadge" class="admin-badge">读取中</span>
+          </div>
+
+          <div id="feishuConnectorPanel">
+            <form id="integrationForm">
+              <label class="toggle-row"><input id="integrationEnabled" type="checkbox"><span><b>启用飞书连接器</b><small>可随时关闭，不会删除本地任务</small></span></label>
+              <div class="admin-grid two">
+                <div><label for="integrationAppId">App ID</label><input id="integrationAppId" placeholder="留空保持当前配置"></div>
+                <div><label for="integrationAppSecret">App Secret</label><input id="integrationAppSecret" type="password" autocomplete="new-password" placeholder="留空保持当前密钥"></div>
+                <div><label for="integrationBaseToken">Base Token</label><input id="integrationBaseToken" placeholder="留空保持当前配置"></div>
+                <div><label for="integrationTableId">Table ID</label><input id="integrationTableId" placeholder="tbl..."></div>
+                <div><label for="integrationSyncPeriod">自动同步间隔（秒）</label><input id="integrationSyncPeriod" type="number" min="15" max="3600" value="60"></div>
+              </div>
+              <p class="admin-inline-status" id="integrationStatusText"></p>
+              <div class="form-actions admin-actions">
+                <button class="button quiet" id="testIntegrationButton" type="button">测试连接</button>
+                <button class="button secondary" id="syncIntegrationButton" type="button">立即同步</button>
+                <button class="button primary" type="submit">保存飞书设置</button>
+              </div>
+            </form>
+          </div>
+
+          <form id="thirdPartyIntegrationForm" hidden>
+            <input id="thirdPartyKind" type="hidden">
+            <label class="toggle-row"><input id="thirdPartyEnabled" type="checkbox"><span><b id="thirdPartyEnabledLabel">启用连接器</b><small>配置会保存在本机；停用不会删除已经收到的事件</small></span></label>
+            <div class="admin-grid two" id="thirdPartyFields"></div>
+            <div class="webhook-callout" id="thirdPartyWebhook"></div>
+            <p class="admin-inline-status" id="thirdPartyStatusText"></p>
+            <div class="form-actions admin-actions">
+              <button class="button quiet" id="testThirdPartyButton" type="button">测试连接</button>
+              <button class="button primary" type="submit">保存连接器</button>
+            </div>
+          </form>
+        </div>
+
+        <details class="integration-events">
+          <summary>最近接入事件 <span id="integrationEventCount">0</span></summary>
+          <div id="integrationEventList" class="integration-event-list"><p>还没有收到第三方事件。</p></div>
+        </details>
+      </section>
+
+      <section class="admin-section">
+        <div class="admin-section-heading"><div><p class="eyebrow">AGENT DEFAULTS</p><h3>Bug 流水线</h3></div></div>
+        <form id="pipelineSettingsForm">
+          <div class="admin-grid three">
+            <div><label for="adminFixAgent">默认修复 Agent</label><select id="adminFixAgent"><option value="codex">Codex</option><option value="cursor">Cursor</option></select></div>
+            <div><label for="adminReviewAgent">默认 Review Agent</label><select id="adminReviewAgent"><option value="cursor">Cursor</option><option value="codex">Codex</option></select></div>
+            <div><label for="adminRepairLimit">最多返修轮数</label><input id="adminRepairLimit" type="number" min="1" max="10"></div>
+            <div><label for="adminCodeTimeout">单次修复超时（秒）</label><input id="adminCodeTimeout" type="number" min="60"></div>
+            <div><label for="adminReviewTimeout">Review 超时（秒）</label><input id="adminReviewTimeout" type="number" min="60"></div>
+            <div><label for="adminBugTimeout">整条流水线超时（秒）</label><input id="adminBugTimeout" type="number" min="300"></div>
+          </div>
+          <div class="form-actions admin-actions"><button class="button primary" type="submit">保存流水线设置</button></div>
+        </form>
+      </section>
+
+      <section class="admin-section">
+        <div class="admin-section-heading"><div><p class="eyebrow">WORKSPACES</p><h3>代码工作区</h3></div><button class="button secondary" id="addWorkspaceButton" type="button">新增工作区</button></div>
+        <p class="admin-description">新 Bug 会从对应工作区的目标基线创建独立分支和 worktree。</p>
+        <div class="workspace-default"><label for="adminDefaultWorkspace">默认工作区</label><select id="adminDefaultWorkspace"></select></div>
+        <div class="workspace-editor-list" id="workspaceEditorList"></div>
+        <div class="form-actions admin-actions"><button class="button primary" id="saveWorkspacesButton" type="button">保存工作区</button></div>
+      </section>
+    </div>
   </dialog>
 
   <div class="toast" id="toast" role="status" hidden></div>

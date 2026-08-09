@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -51,13 +50,14 @@ func setupWebTest(t *testing.T) (*bugConsole, *fakeBugStore, *int) {
 	}
 	oldCfg, oldCache := cfg, wsCache
 	cfg = &Config{EngineBugFix: "codex", EngineBugReview: "cursor", WorkspacesFile: workspaces, StateDir: dir}
+	wsMu.Lock()
 	wsCache = nil
-	wsOnce = sync.Once{}
+	wsMu.Unlock()
 	t.Cleanup(func() {
-		cfg, wsCache, wsOnce = oldCfg, oldCache, sync.Once{}
-		if oldCache != nil {
-			wsOnce.Do(func() {})
-		}
+		cfg = oldCfg
+		wsMu.Lock()
+		wsCache = oldCache
+		wsMu.Unlock()
 	})
 	fake := &fakeBugStore{}
 	fired := 0

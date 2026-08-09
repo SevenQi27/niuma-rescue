@@ -28,6 +28,50 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
     attempts INTEGER NOT NULL DEFAULT 0, handled INTEGER, message_json TEXT NOT NULL,
     last_error TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS local_records (
+    record_id TEXT PRIMARY KEY,
+    fields_json TEXT NOT NULL,
+    external_id TEXT UNIQUE,
+    sync_state TEXT NOT NULL DEFAULT 'local',
+    sync_error TEXT,
+    remote_modified_at INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_local_records_active ON local_records(archived, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_local_records_sync ON local_records(sync_state, archived);
+CREATE TABLE IF NOT EXISTS external_bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id TEXT NOT NULL,
+    integration_kind TEXT NOT NULL,
+    external_type TEXT,
+    external_id TEXT NOT NULL,
+    external_key TEXT,
+    external_url TEXT,
+    sync_state TEXT NOT NULL DEFAULT 'bound',
+    last_error TEXT,
+    remote_version TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(integration_kind, external_id),
+    UNIQUE(record_id, integration_kind, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_bindings_record ON external_bindings(record_id, integration_kind);
+CREATE TABLE IF NOT EXISTS integration_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    integration_kind TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    summary TEXT,
+    status TEXT NOT NULL DEFAULT 'received',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT NOT NULL,
+    last_error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    UNIQUE(integration_kind, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_integration_events_status ON integration_events(status, created_at);
 `
 
 type Store struct{ db *sql.DB }
@@ -44,6 +88,17 @@ type RunRow struct {
 	RecordID, Stage, Status, State, RunID, LastError string
 	Attempts                                         int
 	NextRetryAt, ClaimedAt, HeartbeatAt, UpdatedAt   float64
+}
+
+type IntegrationEventRow struct {
+	ID              int64   `json:"id"`
+	IntegrationKind string  `json:"integration_kind"`
+	EventKey        string  `json:"event_key"`
+	Summary         string  `json:"summary"`
+	Status          string  `json:"status"`
+	Attempts        int     `json:"attempts"`
+	LastError       string  `json:"last_error"`
+	CreatedAt       float64 `json:"created_at"`
 }
 
 func nowf() float64 { return float64(time.Now().UnixNano()) / 1e9 }
@@ -188,6 +243,43 @@ func (s *Store) listRuns(limit int, state string) []RunRow {
 		out = append(out, r)
 	}
 	return out
+}
+
+func (s *Store) enqueueIntegrationEvent(kind, eventKey, summary string, payload []byte) (int64, bool, error) {
+	now := nowf()
+	res, err := s.db.Exec(`INSERT OR IGNORE INTO integration_events
+		(integration_kind,event_key,summary,status,attempts,payload_json,created_at,updated_at)
+		VALUES (?,?,?,'received',0,?,?,?)`, kind, eventKey, summary, string(payload), now, now)
+	if err != nil {
+		return 0, false, err
+	}
+	inserted, _ := res.RowsAffected()
+	var id int64
+	if err := s.db.QueryRow(`SELECT id FROM integration_events WHERE integration_kind=? AND event_key=?`, kind, eventKey).Scan(&id); err != nil {
+		return 0, false, err
+	}
+	return id, inserted > 0, nil
+}
+
+func (s *Store) listIntegrationEvents(limit int) []IntegrationEventRow {
+	if limit < 1 || limit > 200 {
+		limit = 30
+	}
+	rows, err := s.db.Query(`SELECT id,integration_kind,event_key,COALESCE(summary,''),status,attempts,
+		COALESCE(last_error,''),created_at FROM integration_events ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var events []IntegrationEventRow
+	for rows.Next() {
+		var event IntegrationEventRow
+		if rows.Scan(&event.ID, &event.IntegrationKind, &event.EventKey, &event.Summary, &event.Status,
+			&event.Attempts, &event.LastError, &event.CreatedAt) == nil {
+			events = append(events, event)
+		}
+	}
+	return events
 }
 
 // ── inbox ────────────────────────────────────────────────────────────
