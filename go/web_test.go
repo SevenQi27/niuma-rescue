@@ -49,7 +49,7 @@ func setupWebTest(t *testing.T) (*bugConsole, *fakeBugStore, *int) {
 		t.Fatal(err)
 	}
 	oldCfg, oldCache := cfg, wsCache
-	cfg = &Config{EngineBugFix: "codex", EngineBugReview: "cursor", WorkspacesFile: workspaces, StateDir: dir}
+	cfg = &Config{EngineBugFix: "claude", EngineBugReview: "codex", WorkspacesFile: workspaces, StateDir: dir}
 	wsMu.Lock()
 	wsCache = nil
 	wsMu.Unlock()
@@ -192,6 +192,39 @@ func TestWebConsoleUploadsAndServesBugAttachment(t *testing.T) {
 	}
 }
 
+func TestWebConsoleAcceptsMoreThanFiveAttachments(t *testing.T) {
+	console, fake, _ := setupWebTest(t)
+	handler := console.handler()
+	create := `{"title":"many files","description":"multiple logs and screenshots","workspace":"demo","fix_agent":"codex","start":false}`
+	if response := webRequest(handler, http.MethodPost, "/api/bugs", create); response.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for i := 0; i < 7; i++ {
+		part, err := writer.CreateFormFile("images", "screenshot-"+itoa(i)+".png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(append([]byte("\x89PNG\r\n\x1a\n"), byte(i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/bugs/rec-web-1/images", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("upload status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := len(storedWebImages(fieldText(fake.records[0].Fields[FLog]))); got != 7 {
+		t.Fatalf("attachments=%d want=7", got)
+	}
+}
+
 func TestWebAttachmentTypeSupportsDocuments(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -291,7 +324,7 @@ func TestWebConsoleBackfillsPipelineFromAgentArtifacts(t *testing.T) {
 	if len(body.Pipeline.Events) != 1 || body.Pipeline.Events[0].Stage != "investigate" {
 		t.Fatalf("artifact was not backfilled: %#v", body.Pipeline.Events)
 	}
-	if body.Pipeline.Steps[5].State != "waiting" {
+	if stepState(body.Pipeline.Steps, "delivery") != "waiting" {
 		t.Fatalf("merge step must wait for a human: %#v", body.Pipeline.Steps)
 	}
 }

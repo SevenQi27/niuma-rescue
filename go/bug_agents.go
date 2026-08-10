@@ -2,7 +2,18 @@ package main
 
 func validBugAgent(engine string) bool {
 	e := normalizeAgent(engine)
-	return e == "codex" || e == "cursor"
+	return e == "claude" || e == "codex" || e == "cursor"
+}
+
+func bugAgentExcept(excluded string, candidates ...string) string {
+	excluded = normalizeAgent(excluded)
+	for _, candidate := range candidates {
+		agent := normalizeAgent(candidate)
+		if validBugAgent(agent) && agent != excluded {
+			return agent
+		}
+	}
+	return ""
 }
 
 // bugAgentPair 保证修复与 Review 使用两个不同的 Agent。
@@ -12,15 +23,11 @@ func bugAgentPair(requestedFix, defaultFix, defaultReview string) (string, strin
 		fix = normalizeAgent(defaultFix)
 	}
 	if !validBugAgent(fix) {
-		fix = "codex"
+		fix = "claude"
 	}
 	review := normalizeAgent(defaultReview)
-	if !validBugAgent(review) || review == fix || validBugAgent(requestedFix) {
-		if fix == "codex" {
-			review = "cursor"
-		} else {
-			review = "codex"
-		}
+	if !validBugAgent(review) || review == fix {
+		review = bugAgentExcept(fix, defaultReview, "codex", "claude", "cursor")
 	}
 	return fix, review
 }

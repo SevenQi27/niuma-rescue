@@ -72,6 +72,63 @@ CREATE TABLE IF NOT EXISTS integration_events (
     UNIQUE(integration_kind, event_key)
 );
 CREATE INDEX IF NOT EXISTS idx_integration_events_status ON integration_events(status, created_at);
+CREATE TABLE IF NOT EXISTS bug_coordination (
+    record_id TEXT PRIMARY KEY,
+    workspace TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    state TEXT NOT NULL,
+    diagnosis TEXT,
+    files_json TEXT NOT NULL DEFAULT '[]',
+    session_id TEXT,
+    predecessor_id TEXT,
+    similar_record_id TEXT,
+    similarity REAL NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bug_coordination_predecessor ON bug_coordination(predecessor_id, state);
+CREATE TABLE IF NOT EXISTS bug_code_claims (
+    workspace TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    record_id TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    state TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY(workspace, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_bug_code_claims_record ON bug_code_claims(record_id, state);
+CREATE TABLE IF NOT EXISTS development_sessions (
+    session_id TEXT PRIMARY KEY,
+    workspace TEXT NOT NULL,
+    rollover_key TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    base_ref TEXT NOT NULL,
+    base_sha TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at REAL NOT NULL,
+    closed_at REAL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_development_sessions_active
+    ON development_sessions(workspace, state, created_at DESC);
+CREATE TABLE IF NOT EXISTS development_session_tasks (
+    record_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    task_kind TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    branch TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    start_sha TEXT NOT NULL,
+    commit_sha TEXT,
+    state TEXT NOT NULL DEFAULT 'editing',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES development_sessions(session_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_development_session_task_sequence
+    ON development_session_tasks(session_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_development_session_tasks_session
+    ON development_session_tasks(session_id, updated_at);
 `
 
 type Store struct{ db *sql.DB }

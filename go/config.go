@@ -43,6 +43,7 @@ const (
 	SDevReady = "待开发" // 已确认、排队等整批开发的队列状态（不自动跑，等人点「开始开发本批」）
 	SDev      = "开发中"
 	SBug      = "Bug处理中"
+	SCodeWait = "等待代码区域"
 	SReview   = "Review中"
 	SMerge    = "待合并"
 	SDone     = "完成"
@@ -62,7 +63,8 @@ var ValidTransitions = map[string]map[string]bool{
 	SConfirm:  {SDevReady: true, SBlocked: true},             // 确认 → 进「待开发」队列
 	SDevReady: {SDev: true, SBlocked: true},                  // 人点「开始开发本批」→ 开发中
 	SDev:      {SReview: true, SMerge: true, SBlocked: true}, // SMerge：inline 开发完停靠，待人决定 Review
-	SBug:      {SAnswer: true, SMerge: true, SBlocked: true},
+	SBug:      {SAnswer: true, SCodeWait: true, SMerge: true, SBlocked: true},
+	SCodeWait: {SBug: true, SBlocked: true},
 	SReview:   {SDev: true, SMerge: true, SBlocked: true},
 	SMerge:    {SReview: true}, // 人点「做 Review」从待合并回到 Review
 }
@@ -137,8 +139,8 @@ func loadConfig() *Config {
 		EngineClarify:   envText("PIPELINE_ENGINE_CLARIFY", "cursor"),
 		EngineCode:      envText("PIPELINE_ENGINE_CODE", "cursor"),
 		EngineReview:    envText("PIPELINE_ENGINE_REVIEW", "gemini"),
-		EngineBugFix:    envText("PIPELINE_ENGINE_BUG_FIX", "codex"),
-		EngineBugReview: envText("PIPELINE_ENGINE_BUG_REVIEW", "cursor"),
+		EngineBugFix:    envText("PIPELINE_ENGINE_BUG_FIX", "claude"),
+		EngineBugReview: envText("PIPELINE_ENGINE_BUG_REVIEW", "codex"),
 
 		TimeoutClarify:   envInt("PIPELINE_TIMEOUT_CLARIFY", 600),
 		TimeoutCode:      envInt("PIPELINE_TIMEOUT_CODE", 1800),

@@ -38,9 +38,9 @@ a whitelist (`ValidTransitions`), so a record can never skip a human gate.
   follow-up questions before any code is written
 - **Batch development** — multiple requirements targeting the same workspace
   are merged into a *single* agent call (fewer context switches, lower token cost)
-- **Two execution modes** — `inline` (edit the target repo's working tree,
-  human commits) or `worktree` (isolated directory/branch per requirement,
-  auto push + PR/MR)
+- **Three execution strategies** — `inline`, isolated task worktrees, or a shared
+  development session where task agents run in parallel and reviewed commits are
+  integrated serially into one delivery branch
 - **Reliability layer** — SQLite-backed execution leases with heartbeats and
   crash recovery, exponential retry with a failure ceiling, hung-agent watchdog,
   blocked-state alert cards
@@ -125,13 +125,14 @@ See [LICENSE](LICENSE).
 - 自动澄清（产出 PRD 或追问，多条**并行**）、人工确认后进「待开发」队列
 - **合批开发**：点「开始开发本批」把同工作区的多条需求合并成**一次** Agent 调用，开发完停在「待合并」由人决定 Review
 - 飞书命令：`需求池` `开始开发` `看板` `状态` `配置` `健康` `统计` `周报` `重试` `解除阻塞` …
-- **Bug 最小链路**：`Bug@codex：现象`（或 `@cursor`）→ 强制独立 worktree → 测试通过 → 另一 Agent Review → 人工合并；测试失败会返修并在达到上限后阻塞
+- **Bug 最小链路**：`Bug@claude：现象`（也可用 `@codex` / `@cursor`）→ 强制独立 worktree → 测试通过 → 另一 Agent Review → 人工合并；默认 Claude 修复、Codex Review，测试失败会返修并在达到上限后阻塞
 - **局域网任务中心**：页面按 `Bug / 需求` 页签分流；Bug 走调查修复链路，需求走澄清、人工确认、开发、Review 和人工合并；两边都支持附件、修改、进度与归档
 - **管理控制台**：管理本地任务、工作区、Agent 和第三方连接器；默认监听 `:8787`，无需登录
 - **可选飞书同步**：运行时启停、测试连接、立即同步；飞书异常不会阻塞本地任务或 Agent 流水线
 - **第三方集成中心 MVP**：管理禅道、Jira、Slack 配置，测试远端 Token；禅道/Jira Webhook 经过 Token 校验和幂等去重后进入本地事件队列
 - agent 瞬时网络错自动重试、卡死看门狗、阻塞主动告警卡片
 - 默认 **inline 模式**（所有需求在目标仓库当前工作树上改、人工决定提交）；也可按工作区切 `worktree`（各自独立目录/分支、自动 push/PR/MR）。本地 SQLite 记录执行锁/去重/重试
+- 共享开发会话可每天从最新主线创建一个无 upstream 的交付分支；任务 worktree 并行开发，Review 后串行集成，最终目标分支由人决定
 
 ## 人工卡点
 

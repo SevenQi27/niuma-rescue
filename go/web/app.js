@@ -4,9 +4,10 @@
     bugs: [],
     activeType: localStorage.getItem("niuma-task-tab") === "需求" ? "需求" : "Bug",
     filters: {
-      Bug: { query: "", status: "" },
-      需求: { query: "", status: "" },
+      Bug: { query: "", status: "", workspace: "" },
+      需求: { query: "", status: "", workspace: "" },
     },
+    detailTaskID: "",
     expandedPipelines: new Set(),
     pipelines: {},
     pipelineLoading: new Set(),
@@ -17,12 +18,15 @@
     admin: null,
     workspaceEntries: [],
     selectedConnector: "feishu",
+    createAttachments: [],
+    editAttachments: [],
   };
   const byId = (id) => document.getElementById(id);
   const bugForm = byId("bugForm");
   const createError = byId("createError");
   const bugList = byId("bugList");
   const emptyState = byId("emptyState");
+  const createTaskDialog = byId("createTaskDialog");
   const editDialog = byId("editDialog");
   const editForm = byId("editForm");
   const editError = byId("editError");
@@ -76,6 +80,7 @@
     byId("bugWorkspace").innerHTML = `<option value="">请选择代码仓库…</option>${options}`;
     byId("editWorkspace").innerHTML = options;
     byId("editRequirementWorkspace").innerHTML = options;
+    byId("workspaceFilter").innerHTML = `<option value="">全部工作区</option>${options}`;
   }
 
   async function refreshBugs() {
@@ -117,7 +122,7 @@
   function statusTone(status) {
     if (status === "已阻塞") return "status-blocked";
     if (["Bug处理中", "待澄清", "开发中", "Review中"].includes(status)) return "status-active";
-    if (["待选择", "待回答", "待确认", "待开发"].includes(status)) return "status-waiting";
+    if (["待选择", "待回答", "待确认", "待开发", "等待代码区域"].includes(status)) return "status-waiting";
     if (status === "待合并") return "status-merge";
     if (status === "完成") return "status-done";
     return "";
@@ -136,13 +141,23 @@
     });
     const query = byId("searchInput").value.trim().toLowerCase();
     const status = byId("statusFilter").value;
+    const workspace = byId("workspaceFilter").value;
     const visible = state.bugs.filter((bug) => {
       const matchesText = !query || `${bug.title} ${bug.description}`.toLowerCase().includes(query);
-      return bug.task_type === state.activeType && matchesText && (!status || bug.status === status);
+      return bug.task_type === state.activeType && matchesText && (!status || bug.status === status) && (!workspace || bug.workspace === workspace);
     });
+    const detailTask = state.bugs.find((bug) => bug.id === state.detailTaskID);
+    if (state.detailTaskID && !detailTask) state.detailTaskID = "";
     updateTaskTabCounts();
     renderSummary();
-    bugList.innerHTML = visible.map(renderBug).join("");
+    document.body.classList.toggle("task-detail-open", Boolean(detailTask));
+    bugList.innerHTML = `${visible.length ? `
+      <div class="task-table" role="table" aria-label="任务管理列表">
+        <div class="task-table-head" role="row">
+          <span>任务</span><span>状态</span><span>工作区</span><span>执行 Agent</span><span>数据</span><span></span>
+        </div>
+        <div class="task-table-body">${visible.map(renderTaskTableRow).join("")}</div>
+      </div>` : ""}${detailTask ? renderTaskDetailLayer(detailTask) : ""}`;
     bugList.querySelectorAll("[data-scroll-key]").forEach((element) => {
       const position = state.scrollPositions.get(element.dataset.scrollKey);
       if (!position) return;
@@ -153,14 +168,49 @@
     emptyState.hidden = visible.length !== 0;
   }
 
+  function renderTaskTableRow(task) {
+    const tone = statusTone(task.status);
+    const primaryAgent = task.task_type === "需求" ? task.code_agent : task.fix_agent;
+    const syncLabel = task.sync_state === "synced" ? "飞书已同步" : task.sync_state === "error" ? "同步失败" : task.sync_state === "pending" ? "待同步" : "仅本地";
+    const syncTone = task.sync_state === "synced" ? "is-synced" : task.sync_state === "error" ? "is-error" : task.sync_state === "pending" ? "is-pending" : "";
+    const coordination = task.coordination || {};
+    const relation = coordination.predecessor_id
+      ? `<small class="task-relation">合并顺序：${esc(coordination.predecessor_id)} → 当前任务</small>`
+      : coordination.similar_task_id ? `<small class="task-relation">与 ${esc(coordination.similar_task_id)} 相似 ${Math.round((coordination.similarity || 0) * 100)}%</small>` : "";
+    return `<button class="task-table-row" type="button" role="row" data-action="view-task" data-id="${esc(task.id)}">
+      <span class="task-table-main" role="cell"><strong>${esc(task.title)}</strong><small>${esc(task.description)}</small>${relation}</span>
+      <span class="task-table-status" role="cell"><em class="status-badge ${tone}">${esc(task.status)}</em></span>
+      <span class="task-table-cell" role="cell">${esc(task.workspace || "未设置")}</span>
+      <span class="task-table-cell task-table-agents" role="cell">${esc(primaryAgent || "未指定")} <i>→</i> ${esc(task.review_agent || "未指定")}</span>
+      <span class="task-table-cell" role="cell"><em class="sync-chip ${syncTone}">${syncLabel}</em></span>
+      <span class="task-table-arrow" role="cell">›</span>
+    </button>`;
+  }
+
+  function renderTaskDetailLayer(task) {
+    const tone = statusTone(task.status);
+    return `<div class="task-detail-layer" role="presentation">
+      <button class="task-detail-backdrop" type="button" data-action="close-task-detail" aria-label="关闭任务详情"></button>
+      <section class="task-detail-modal" role="dialog" aria-modal="true" aria-labelledby="taskDetailHeading">
+        <div class="task-detail-modal-heading"><div><p class="eyebrow">${task.task_type === "需求" ? "REQUIREMENT DETAIL" : "BUG DETAIL"}</p><h2 id="taskDetailHeading">${esc(task.title)}</h2></div><div class="task-detail-heading-actions"><span class="status-badge ${tone}">${esc(task.status)}</span><button class="close-button" type="button" data-action="close-task-detail" aria-label="关闭">×</button></div></div>
+        <div class="task-detail-scroll" data-scroll-key="task-detail:${esc(task.id)}">${renderBug(task)}</div>
+      </section>
+    </div>`;
+  }
+
   function renderSummary() {
     const current = state.bugs.filter((bug) => bug.task_type === state.activeType);
     const activeStatuses = state.activeType === "Bug" ? ["Bug处理中", "Review中"] : ["待澄清", "开发中", "Review中"];
-    const waitingStatuses = state.activeType === "Bug" ? ["待选择", "待回答", "已阻塞"] : ["待选择", "待回答", "待确认", "待开发", "已阻塞"];
+    const waitingStatuses = state.activeType === "Bug" ? ["待选择", "待回答", "等待代码区域", "已阻塞"] : ["待选择", "待回答", "待确认", "待开发", "已阻塞"];
     const active = current.filter((bug) => activeStatuses.includes(bug.status)).length;
     const waiting = current.filter((bug) => waitingStatuses.includes(bug.status)).length;
     const merge = current.filter((bug) => bug.status === "待合并").length;
-    byId("summary").innerHTML = `<span>处理中 ${active}</span><span>待你处理 ${waiting}</span><span>待合并 ${merge}</span>`;
+    const done = current.filter((bug) => bug.status === "完成").length;
+    byId("summary").innerHTML = `
+      <div class="summary-stat is-active"><span>处理中</span><b>${active}</b><small>Agent 正在执行</small></div>
+      <div class="summary-stat is-waiting"><span>待我处理</span><b>${waiting}</b><small>需要人工补充或确认</small></div>
+      <div class="summary-stat is-merge"><span>待合并</span><b>${merge}</b><small>等待代码交付</small></div>
+      <div class="summary-stat is-done"><span>已完成</span><b>${done}</b><small>本页签累计完成</small></div>`;
   }
 
   function updateTaskTabCounts() {
@@ -171,7 +221,7 @@
   function updateStatusFilter() {
     const current = byId("statusFilter").value;
     const statuses = state.activeType === "Bug"
-      ? ["待选择", "待回答", "Bug处理中", "Review中", "待合并", "已阻塞", "完成"]
+      ? ["待选择", "待回答", "Bug处理中", "等待代码区域", "Review中", "待合并", "已阻塞", "完成"]
       : ["待选择", "待澄清", "待回答", "待确认", "待开发", "开发中", "Review中", "待合并", "已阻塞", "完成"];
     byId("statusFilter").innerHTML = `<option value="">全部状态</option>${statuses.map((status) => `<option value="${status}">${status}</option>`).join("")}`;
     byId("statusFilter").value = statuses.includes(current) ? current : "";
@@ -187,15 +237,11 @@
       tab.setAttribute("aria-selected", String(active));
     });
     const requirement = state.activeType === "需求";
-    byId("heroEyebrow").textContent = requirement ? "从想法到可验收交付" : "从问题描述到可审查修复";
-    byId("heroTitle").innerHTML = requirement ? "说清想法，<br><span>交给流水线。</span>" : "发现问题，<br><span>交给流水线。</span>";
+    byId("heroEyebrow").textContent = requirement ? "REQUIREMENT WORKFLOW" : "BUG WORKFLOW";
+    byId("heroTitle").textContent = requirement ? "需求任务" : "Bug 任务";
     byId("heroLead").textContent = requirement
-      ? "在这里录入需求。Niuma 会先让 Agent 澄清并生成 PRD，等你确认后再开发、Review，最后停在人工合并。"
-      : "在这里录入或补充 Bug。开始后，Niuma 会创建独立 worktree，安排一个 Agent 修复、另一个 Agent Review，最后停在人工合并。";
-    byId("flowStrip").innerHTML = requirement
-      ? "<span>录入</span><b>→</b><span>澄清</span><b>→</b><span>人工确认</span><b>→</b><span>开发</span><b>→</b><span>Review</span><b>→</b><span>人工合并</span>"
-      : "<span>录入</span><b>→</b><span>调查</span><b>→</b><span>修复</span><b>→</b><span>测试</span><b>→</b><span>Review</span><b>→</b><span>人工合并</span>";
-    byId("flowStrip").setAttribute("aria-label", requirement ? "需求开发流程" : "Bug 修复流程");
+      ? "管理和跟踪 AI 澄清、开发、Review 与人工交付进度。"
+      : "管理和跟踪 AI 调查、修复、Review 与人工合并进度。";
     byId("formTitle").textContent = requirement ? "提交一个需求" : "提交一个 Bug";
     byId("formDescription").textContent = requirement ? "先保存到需求池，准备好后再让 AI 开始澄清。" : "先保存还能继续修改，确认清楚后再开始修复。";
     byId("bugTitle").placeholder = requirement ? "例如：新增销售日报的按项目导出功能" : "例如：大金额折扣计算结果为负数";
@@ -204,14 +250,16 @@
     byId("bugAgentFields").hidden = requirement;
     byId("requirementAgentFields").hidden = !requirement;
     byId("startSubmitButton").textContent = requirement ? "保存并开始澄清" : "保存并开始修复";
-    byId("boardEyebrow").textContent = requirement ? "REQUIREMENT BOARD" : "BUG BOARD";
-    byId("boardTitle").textContent = requirement ? "需求交付进度" : "问题处理进度";
+    byId("openCreateTaskButton").textContent = requirement ? "+ 提交需求" : "+ 提交 Bug";
+    byId("boardEyebrow").textContent = "TASKS";
+    byId("boardTitle").textContent = "任务列表";
     byId("emptyIcon").textContent = requirement ? "✨" : "☕";
     byId("emptyTitle").textContent = requirement ? "这里还没有匹配的需求" : "这里还没有匹配的 Bug";
     byId("emptyDescription").textContent = requirement ? "把目标和边界写下来，让 Agent 先帮你澄清。" : "写清楚问题，剩下的交给流水线。";
     byId("searchInput").value = state.filters[state.activeType].query;
     updateStatusFilter();
     byId("statusFilter").value = state.filters[state.activeType].status;
+    byId("workspaceFilter").value = state.filters[state.activeType].workspace;
     if (shouldRender) render();
   }
 
@@ -249,13 +297,21 @@
     const syncLabel = bug.sync_state === "synced" ? "飞书已同步" : bug.sync_state === "error" ? "飞书同步失败" : bug.sync_state === "pending" ? "等待飞书同步" : "仅保存在本地";
     const syncTone = bug.sync_state === "synced" ? "is-synced" : bug.sync_state === "error" ? "is-error" : bug.sync_state === "pending" ? "is-pending" : "";
     const syncChip = `<span class="sync-chip ${syncTone}" title="${esc(bug.sync_error || syncLabel)}">${syncLabel}</span>`;
+    const coordination = bug.coordination || {};
+    const affectedFiles = (coordination.affected_files || []).filter((file) => file !== "*");
+    const coordinationPanel = coordination.message ? `<section class="coordination-panel">
+      <div><b>代码冲突协调</b><span>${esc(coordination.message)}</span></div>
+      ${coordination.similar_task_id ? `<small>相似任务：${esc(coordination.similar_task_id)} · ${Math.round((coordination.similarity || 0) * 100)}%</small>` : ""}
+      ${coordination.merge_order ? `<small>建议合并顺序：${coordination.merge_order.map(esc).join(" → ")}</small>` : ""}
+      ${affectedFiles.length ? `<details><summary>预计修改 ${affectedFiles.length} 个文件</summary><code>${affectedFiles.map(esc).join("\n")}</code></details>` : ""}
+    </section>` : "";
     return `<article class="bug-card ${tone}">
       <div class="bug-main">
         <div>
           <div class="bug-title-row"><h3>${esc(bug.title)}</h3><span class="status-badge ${tone}">${esc(bug.status)}</span></div>
           <p class="bug-description">${esc(bug.description)}</p>
           <div class="bug-meta"><span>工作区 · ${esc(bug.workspace || "未设置")}</span>${requirement ? `<span>${esc(bug.clarify_agent)} 澄清</span><span>${esc(bug.code_agent)} 开发</span>` : `<span>${esc(bug.fix_agent)} 修复</span>`}<span>${esc(bug.review_agent)} Review</span>${syncChip}${link}</div>
-          ${clarification}${prd}${attachmentStrip}${details}
+          ${clarification}${prd}${attachmentStrip}${coordinationPanel}${details}
         </div>
         <div class="bug-actions">${pipelineButton}${stopButton}${retryButton}${confirmButton}${developButton}${reviewButton}${completeButton}${editButton}${startButton}${archiveButton}</div>
       </div>
@@ -288,6 +344,7 @@
       develop: "AI 开发",
       prepare: "准备隔离分支",
       investigate: "AI 调查",
+      coordinate: "代码范围协调",
       fix: "AI 修复",
       test: "自动验证",
       review: "独立 Review",
@@ -351,11 +408,9 @@
     };
   }
 
-  function selectedAttachments(input) {
-    const files = Array.from(input.files || []);
-    if (files.length > 5) throw new Error("每次最多选择 5 个附件");
+  function selectedAttachments(files) {
     if (files.some((file) => file.size > 8 * 1024 * 1024)) throw new Error("单个附件不能超过 8MB");
-    return files;
+    return Array.from(files);
   }
 
   async function uploadAttachments(id, files) {
@@ -365,16 +420,35 @@
     await api(`/api/tasks/${encodeURIComponent(id)}/attachments`, { method: "POST", body: form });
   }
 
-  function showSelectedAttachments(input, target) {
-    target.innerHTML = Array.from(input.files || []).map((file) => `<span>${esc(file.name)}</span>`).join("");
+  function attachmentKey(file) {
+    return `${file.name}:${file.size}:${file.lastModified}`;
+  }
+
+  function showSelectedAttachments(files, target, scope) {
+    target.innerHTML = files.map((file, index) => `<span><b>${esc(file.name)}</b><button type="button" data-remove-attachment="${index}" data-attachment-scope="${scope}" aria-label="移除 ${esc(file.name)}">×</button></span>`).join("");
+  }
+
+  function appendSelectedAttachments(input, scope) {
+    const stateKey = scope === "edit" ? "editAttachments" : "createAttachments";
+    const target = byId(scope === "edit" ? "editAttachmentSelection" : "bugAttachmentSelection");
+    const known = new Set(state[stateKey].map(attachmentKey));
+    Array.from(input.files || []).forEach((file) => {
+      if (!known.has(attachmentKey(file))) {
+        state[stateKey].push(file);
+        known.add(attachmentKey(file));
+      }
+    });
+    input.value = "";
+    showSelectedAttachments(state[stateKey], target, scope);
   }
 
   function resetCreateForm(reporter) {
     bugForm.reset();
     byId("bugReporter").value = reporter;
     byId("bugWorkspace").value = "";
+    state.createAttachments = [];
     byId("bugAttachmentSelection").innerHTML = "";
-    bugForm.querySelector('input[value="codex"]').checked = true;
+    bugForm.querySelector('input[value="claude"]').checked = true;
     byId("requirementClarifyAgent").value = "cursor";
     byId("requirementCodeAgent").value = "cursor";
     byId("requirementReviewAgent").value = "gemini";
@@ -389,7 +463,7 @@
     buttons.forEach((button) => button.disabled = true);
     let createdBug = null;
     try {
-      const files = selectedAttachments(byId("bugAttachments"));
+      const files = selectedAttachments(state.createAttachments);
       const payload = { ...bugPayload("bug"), start: false };
       const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(payload) });
       createdBug = created.task;
@@ -397,6 +471,7 @@
       if (start) await api(`/api/tasks/${encodeURIComponent(createdBug.id)}/start`, { method: "POST", body: "{}" });
       localStorage.setItem("niuma-reporter", payload.reporter);
       resetCreateForm(payload.reporter);
+      createTaskDialog.close();
       await refreshBugs();
       showToast(start ? (payload.task_type === "需求" ? "需求已进入 AI 澄清" : "Bug 已开始进入修复流水线") : `${payload.task_type}已保存，之后还可以修改`);
     } catch (error) {
@@ -410,8 +485,18 @@
   bugList.addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
+    if (button.dataset.action === "close-task-detail") {
+      state.detailTaskID = "";
+      render();
+      return;
+    }
     const bug = state.bugs.find((item) => item.id === button.dataset.id);
     if (!bug) return;
+    if (button.dataset.action === "view-task") {
+      state.detailTaskID = bug.id;
+      render();
+      return;
+    }
     if (button.dataset.action === "pipeline") {
       if (state.expandedPipelines.has(bug.id)) {
         state.expandedPipelines.delete(bug.id);
@@ -446,6 +531,7 @@
         byId("editAgent").value = bug.fix_agent;
       }
       byId("editAttachments").value = "";
+      state.editAttachments = [];
       byId("editAttachmentSelection").innerHTML = "";
       editError.textContent = "";
       editDialog.showModal();
@@ -471,7 +557,7 @@
       confirm: ["确认需求", "确认当前 PRD 和验收标准，可以进入待开发队列？"],
       develop: ["开始开发", "确认开始开发这条需求？Agent 会在对应工作区执行。"],
       review: ["发起 Review", "确认交给另一个 Agent 审查当前改动？"],
-      complete: ["确认完成", bug.task_type === "Bug" ? "确认代码已经人工合并到目标分支？Niuma 会校验后标记完成。" : "确认需求代码已经人工检查并合并，可以标记完成？"],
+      complete: ["确认完成", bug.task_type === "Bug" ? "确认这条 Bug 已人工处理完成？确认后会直接标记完成，不再校验修复分支是否已合入 main。" : "确认需求代码已经人工检查并合并，可以标记完成？"],
       archive: ["归档", "确认归档这条任务？归档后不会出现在看板中。"],
     };
     if (managedActions[button.dataset.action]) {
@@ -516,7 +602,7 @@
     byId("saveEditButton").disabled = true;
     try {
       const id = byId("editId").value;
-      const files = selectedAttachments(byId("editAttachments"));
+      const files = selectedAttachments(state.editAttachments);
       const payload = bugPayload("edit");
       await api(`/api/tasks/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
       await uploadAttachments(id, files);
@@ -540,13 +626,14 @@
     if (!manageDialog.open) manageDialog.showModal();
     byId("adminOverview").innerHTML = `<div class="admin-loading">正在读取运行状态…</div>`;
     try {
-      const [overview, pipeline, workspaces, integrations] = await Promise.all([
+      const [overview, pipeline, workspaces, integrations, developmentSessions] = await Promise.all([
         api("/api/admin/overview"),
         api("/api/admin/pipeline"),
         api("/api/admin/workspaces"),
         api("/api/admin/integrations"),
+		api("/api/admin/development-sessions"),
       ]);
-      state.admin = { overview, pipeline: pipeline.pipeline, workspaces: workspaces.workspaces, integrations };
+	  state.admin = { overview, pipeline: pipeline.pipeline, workspaces: workspaces.workspaces, integrations, developmentSessions };
       state.workspaceEntries = Object.entries(state.admin.workspaces.items || {}).map(([key, item]) => ({ key, ...item }));
       renderManagement();
     } catch (error) {
@@ -590,7 +677,8 @@
     byId("adminCodeTimeout").value = pipeline.timeout_code;
     byId("adminReviewTimeout").value = pipeline.timeout_review;
     byId("adminBugTimeout").value = pipeline.timeout_bug;
-    renderWorkspaceEditors();
+	  renderWorkspaceEditors();
+	  renderDevelopmentSessions();
   }
 
   function connectorStatuses() {
@@ -737,10 +825,16 @@
         <div class="wide"><label>仓库绝对路径</label><input data-field="path" value="${value("path")}" required></div>
         <div><label>SCM</label><select data-field="scm"><option value="git" ${entry.scm !== "svn" ? "selected" : ""}>Git</option><option value="svn" ${entry.scm === "svn" ? "selected" : ""}>SVN</option></select></div>
         <div><label>工作模式</label><select data-field="work_mode"><option value="worktree" ${entry.work_mode !== "inline" ? "selected" : ""}>独立 worktree</option><option value="inline" ${entry.work_mode === "inline" ? "selected" : ""}>当前目录 inline</option></select></div>
+		<div><label>工作区范围</label><select data-field="workspace_scope"><option value="task" ${entry.workspace_scope !== "session" ? "selected" : ""}>每任务独立</option><option value="session" ${entry.workspace_scope === "session" ? "selected" : ""}>共享开发会话</option></select></div>
+		<div><label>任务执行</label><select data-field="queue_mode"><option value="parallel" ${entry.queue_mode !== "serial" ? "selected" : ""}>并行开发、串行集成</option><option value="serial" ${entry.queue_mode === "serial" ? "selected" : ""}>全部串行</option></select></div>
+		<div><label>会话滚动</label><select data-field="session_rollover"><option value="daily" ${entry.session_rollover === "daily" ? "selected" : ""}>每天</option><option value="manual" ${entry.session_rollover !== "daily" ? "selected" : ""}>手动</option></select></div>
+		<div><label>交付目标</label><select data-field="delivery_target"><option value="user_choose" ${entry.delivery_target === "user_choose" ? "selected" : ""}>完成后由用户选择</option><option value="fixed" ${entry.delivery_target !== "user_choose" ? "selected" : ""}>固定目标分支</option></select></div>
         <div><label>基线</label><input data-field="base" value="${value("base", "origin/main")}"></div>
         <div><label>目标分支</label><input data-field="target_branch" value="${value("target_branch", "main")}"></div>
         <div class="wide"><label>worktree 统一目录</label><input data-field="worktree_base" value="${value("worktree_base")}"></div>
         <div><label>规则来源目录</label><input data-field="rules_source" value="${value("rules_source")}"></div>
+        <div class="wide"><label>JDK Home</label><input data-field="java_home" value="${value("java_home")}" placeholder="例如 /path/to/jdk/Contents/Home"></div>
+        <div class="wide"><label>Maven Home</label><input data-field="maven_home" value="${value("maven_home")}" placeholder="例如 /path/to/apache-maven-3.8.9"></div>
         <div class="wide"><label>验证命令</label><input data-field="test_cmd" value="${value("test_cmd")}" placeholder="例如 mvn test"></div>
         <div><label>PR 提供方</label><select data-field="pr_provider"><option value="none" ${!entry.pr_provider || entry.pr_provider === "none" ? "selected" : ""}>不自动创建</option><option value="github" ${entry.pr_provider === "github" ? "selected" : ""}>GitHub</option><option value="gitlab" ${entry.pr_provider === "gitlab" ? "selected" : ""}>GitLab</option></select></div>
         <div><label>GitHub 仓库</label><input data-field="gh_repo" value="${value("gh_repo")}" placeholder="owner/repo"></div>
@@ -748,8 +842,24 @@
       <div class="workspace-checks">
         <label><input type="checkbox" data-field="push_enabled" ${entry.push_enabled ? "checked" : ""}>允许自动 Push</label>
         <label><input type="checkbox" data-field="pr_enabled" ${entry.pr_enabled ? "checked" : ""}>允许自动创建 PR</label>
+		<label><input type="checkbox" data-field="track_upstream" ${entry.track_upstream ? "checked" : ""}>Push 后跟踪远端任务分支</label>
       </div>
     </article>`;
+  }
+
+  function renderDevelopmentSessions() {
+	const sessions = state.admin?.developmentSessions?.sessions || [];
+	byId("developmentSessionList").innerHTML = sessions.length ? sessions.map((session) => {
+	  const tasks = session.tasks || [];
+	  const integrated = tasks.filter((task) => task.state === "integrated").length;
+	  const taskRows = tasks.map((task) => `<span class="development-session-task is-${esc(task.state)}">#${task.sequence} ${esc(task.task_kind)}-${esc(task.record_id)} · ${esc(task.state)}</span>`).join("");
+	  return `<article class="development-session-card">
+		<div class="development-session-head"><div><b>${esc(session.branch)}</b><small>${esc(session.workspace)} · ${esc(session.base_ref)}@${esc((session.base_sha || "").slice(0, 8))}</small></div><span class="admin-badge ${session.state === "open" ? "is-on" : ""}">${session.state === "open" ? "进行中" : "已冻结"}</span></div>
+		<p>${integrated}/${tasks.length} 个任务已集成 · ${new Date(Number(session.created_at || 0) * 1000).toLocaleString("zh-CN")}</p>
+		<div class="development-session-tasks">${taskRows || "<span>等待首个任务</span>"}</div>
+		${session.state === "open" ? `<button class="button secondary" type="button" data-freeze-session="${esc(session.session_id)}">冻结会话</button>` : ""}
+	  </article>`;
+	}).join("") : "<p>还没有共享开发会话。</p>";
   }
 
   function renderWorkspaceEditors() {
@@ -785,11 +895,15 @@
       const key = read("key").value.trim();
       items[key] = {
         path: read("path").value.trim(), scm: read("scm").value, work_mode: read("work_mode").value,
+		workspace_scope: read("workspace_scope").value, queue_mode: read("queue_mode").value,
+		session_rollover: read("session_rollover").value, delivery_target: read("delivery_target").value,
         worktree_base: read("worktree_base").value.trim(), rules_source: read("rules_source").value.trim(),
         base: read("base").value.trim(), target_branch: read("target_branch").value.trim(),
+        java_home: read("java_home").value.trim(), maven_home: read("maven_home").value.trim(),
         test_cmd: read("test_cmd").value.trim(), pr_provider: read("pr_provider").value,
         gh_repo: read("gh_repo").value.trim(), push_enabled: read("push_enabled").checked,
         pr_enabled: read("pr_enabled").checked,
+		track_upstream: read("track_upstream").checked,
       };
     });
     return { default: byId("adminDefaultWorkspace").value, items };
@@ -867,7 +981,7 @@
   byId("addWorkspaceButton").addEventListener("click", () => {
     let number = state.workspaceEntries.length + 1;
     while (state.workspaceEntries.some((entry) => entry.key === `workspace${number}`)) number += 1;
-    state.workspaceEntries.push({ key: `workspace${number}`, scm: "git", work_mode: "worktree", base: "origin/main", target_branch: "main", pr_provider: "none" });
+	state.workspaceEntries.push({ key: `workspace${number}`, scm: "git", work_mode: "worktree", workspace_scope: "task", queue_mode: "parallel", session_rollover: "manual", delivery_target: "fixed", base: "origin/main", target_branch: "main", pr_provider: "none" });
     renderWorkspaceEditors();
   });
 
@@ -889,6 +1003,18 @@
     } catch (error) { showToast(error.message, true); }
   });
 
+  byId("developmentSessionList").addEventListener("click", async (event) => {
+	const button = event.target.closest("[data-freeze-session]");
+	if (!button) return;
+	button.disabled = true;
+	try {
+	  await api(`/api/admin/development-sessions/${encodeURIComponent(button.dataset.freezeSession)}/freeze`, { method: "POST", body: "{}" });
+	  await openManagement();
+	  showToast("共享开发会话已冻结，可以人工选择交付分支");
+	} catch (error) { showToast(error.message, true); }
+	finally { button.disabled = false; }
+  });
+
   function showToast(message, isError = false) {
     toast.textContent = message;
     toast.style.background = isError ? "#b72f44" : "#211f2f";
@@ -899,16 +1025,41 @@
 
   byId("refreshButton").addEventListener("click", refreshBugs);
   byId("manageButton").addEventListener("click", openManagement);
+  byId("openCreateTaskButton").addEventListener("click", () => {
+    createError.textContent = "";
+    createTaskDialog.showModal();
+  });
+  byId("closeCreateTaskButton").addEventListener("click", () => createTaskDialog.close());
   byId("closeManageButton").addEventListener("click", () => manageDialog.close());
-  byId("bugAttachments").addEventListener("change", () => showSelectedAttachments(byId("bugAttachments"), byId("bugAttachmentSelection")));
-  byId("editAttachments").addEventListener("change", () => showSelectedAttachments(byId("editAttachments"), byId("editAttachmentSelection")));
-  document.querySelectorAll("[data-task-tab]").forEach((tab) => tab.addEventListener("click", () => applyTaskTab(tab.dataset.taskTab)));
+  byId("bugAttachments").addEventListener("change", () => appendSelectedAttachments(byId("bugAttachments"), "create"));
+  byId("editAttachments").addEventListener("change", () => appendSelectedAttachments(byId("editAttachments"), "edit"));
+  [byId("bugAttachmentSelection"), byId("editAttachmentSelection")].forEach((container) => container.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-remove-attachment]");
+    if (!button) return;
+    const stateKey = button.dataset.attachmentScope === "edit" ? "editAttachments" : "createAttachments";
+    state[stateKey].splice(Number(button.dataset.removeAttachment), 1);
+    showSelectedAttachments(state[stateKey], container, button.dataset.attachmentScope);
+  }));
+  document.querySelectorAll("[data-task-tab]").forEach((tab) => tab.addEventListener("click", () => {
+    state.detailTaskID = "";
+    applyTaskTab(tab.dataset.taskTab);
+  }));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.detailTaskID) {
+      state.detailTaskID = "";
+      render();
+    }
+  });
   byId("searchInput").addEventListener("input", () => {
     state.filters[state.activeType].query = byId("searchInput").value;
     render();
   });
   byId("statusFilter").addEventListener("change", () => {
     state.filters[state.activeType].status = byId("statusFilter").value;
+    render();
+  });
+  byId("workspaceFilter").addEventListener("change", () => {
+    state.filters[state.activeType].workspace = byId("workspaceFilter").value;
     render();
   });
 

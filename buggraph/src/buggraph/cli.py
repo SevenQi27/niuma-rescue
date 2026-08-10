@@ -57,7 +57,12 @@ def run(payload: dict) -> dict:
         "test_timeout": int(payload.get("test_timeout", 1800)),
         "max_repairs": max(1, int(payload.get("max_repairs", 2))),
         "iteration": 0,
-        "status": "NEW",
+        "fix_session_id": payload.get("initial_session_id", ""),
+        "diagnosis": payload.get("initial_diagnosis", ""),
+        "affected_files": payload.get("initial_affected_files", []),
+        "skip_investigation": bool(payload.get("skip_investigation", False)),
+        "stop_after_investigation": bool(payload.get("stop_after_investigation", False)),
+        "status": "DIAGNOSED" if payload.get("skip_investigation", False) else "NEW",
     }
     config = {"configurable": {"thread_id": payload.get("thread_id", f"bug:{payload['record_id']}")}}
     bridge = AgentBridge(payload["agent_runner"])
@@ -73,6 +78,8 @@ def run(payload: dict) -> dict:
         "status": result.get("status", "BLOCKED"),
         "summary": result.get("summary", ""),
         "diagnosis": result.get("diagnosis", ""),
+        "affected_files": result.get("affected_files", []),
+        "fix_session_id": result.get("fix_session_id", ""),
         "questions": result.get("questions", ""),
         "test_ok": bool(result.get("test_ok", False)),
         "test_output": result.get("test_output", ""),

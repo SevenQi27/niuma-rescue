@@ -58,16 +58,8 @@ func (a *App) markDone(rec *Record) opResult {
 	if status := fieldText(rec.Fields[FStatus]); status != SMerge {
 		return opResult{"当前状态「" + status + "」，只有待合并任务可以确认完成。", false, false}
 	}
-	if isBugRecord(rec) {
-		ws := a.workspaceFor(rec)
-		if !strings.EqualFold(ws.SCM, "git") {
-			return opResult{"Bug 完成校验只支持 Git 工作区。", false, false}
-		}
-		if ok, detail := verifyBugMerged(ws, rec.RecordID); !ok {
-			return opResult{"尚不能标记完成：" + detail + "。请先人工合并，并确保本地目标分支已同步。", false, false}
-		}
-	}
 	a.st.clear(rec.RecordID, "manual done")
+	a.releaseBugCoordination(rec.RecordID, "done")
 	a.updateWithLog(rec, map[string]any{FStatus: SDone}, "[manual] 已确认人工合并并完成")
 	return opResult{"已确认人工合并并完成：" + recTitle(rec), true, false}
 }
@@ -81,6 +73,7 @@ func (a *App) restartClarify(rec *Record) opResult {
 	if isBugRecord(rec) {
 		next = SBug
 		label = "Bug 修复"
+		a.releaseBugCoordination(rec.RecordID, "retrying")
 	}
 	a.st.clear(rec.RecordID, "manual restart "+label)
 	a.updateWithLog(rec, map[string]any{FStatus: next, FFails: 0}, "[manual] 重新进入"+label)
@@ -94,17 +87,13 @@ func (a *App) setAgent(rec *Record, agent, stage string) opResult {
 	}
 	if isBugRecord(rec) {
 		if !validBugAgent(e) {
-			return opResult{"Bug 流水线当前只支持 codex / cursor，且修复与 Review 必须不同。", false, false}
+			return opResult{"Bug 流水线当前只支持 claude / codex / cursor，且修复与 Review 必须不同。", false, false}
 		}
 		fix, review := resolveBugAgents(rec)
 		if stage == "review" {
 			review = e
 			if review == fix {
-				if review == "codex" {
-					fix = "cursor"
-				} else {
-					fix = "codex"
-				}
+				fix = bugAgentExcept(review, cfg.EngineBugFix, "claude", "codex", "cursor")
 			}
 		} else {
 			fix, review = bugAgentPair(e, cfg.EngineBugFix, cfg.EngineBugReview)

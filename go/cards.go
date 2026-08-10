@@ -8,14 +8,14 @@ import (
 
 var templateStatus = map[string]string{
 	SSetup: "turquoise", SClarify: "wathet", SAnswer: "yellow", SConfirm: "blue",
-	SDevReady: "orange", SDev: "purple", SBug: "purple", SReview: "indigo", SMerge: "green", SDone: "green", SBlocked: "red",
+	SDevReady: "orange", SDev: "purple", SBug: "purple", SCodeWait: "orange", SReview: "indigo", SMerge: "green", SDone: "green", SBlocked: "red",
 }
 var statusEmoji = map[string]string{
 	SSetup: "🎛", SClarify: "🔍", SAnswer: "💬", SConfirm: "📋",
-	SDevReady: "📦", SDev: "🔧", SBug: "🐛", SReview: "🔎", SMerge: "🚀", SDone: "✔️", SBlocked: "🚫",
+	SDevReady: "📦", SDev: "🔧", SBug: "🐛", SCodeWait: "⏳", SReview: "🔎", SMerge: "🚀", SDone: "✔️", SBlocked: "🚫",
 }
 var boardOrder = map[string]int{
-	SBlocked: 0, SSetup: 1, SConfirm: 2, SDevReady: 3, SMerge: 4, SAnswer: 5, SClarify: 6, SDev: 7, SBug: 8, SReview: 9,
+	SBlocked: 0, SCodeWait: 1, SSetup: 2, SConfirm: 3, SDevReady: 4, SMerge: 5, SAnswer: 6, SClarify: 7, SDev: 8, SBug: 9, SReview: 10,
 }
 var agentChoices = []string{"claude", "codex", "gemini", "cursor"}
 
@@ -419,7 +419,7 @@ func settingsCard(r *Record, wsKeys []string) map[string]any {
 	if isBugRecord(r) {
 		fix, review := resolveBugAgents(r)
 		curAgent = fix
-		choices = []string{"codex", "cursor"}
+		choices = []string{"claude", "codex", "cursor"}
 		roleLabel = "修复 Agent（Review=" + review + "，自动使用另一个）"
 		startLabel = "🐛 开始调查并修复"
 	}
@@ -530,7 +530,7 @@ func boardCard(records []Record) map[string]any {
 	fl := inFlight(records)
 	if len(fl) == 0 {
 		return card(cardHeader("任务看板 · 无在途任务", "", "grey"),
-			md("当前没有进行中的任务。发「需求@cursor：…」或「Bug@codex：…」开一条。"))
+			md("当前没有进行中的任务。发「需求@cursor：…」或「Bug@claude：…」开一条。"))
 	}
 	counts := map[string]int{}
 	for _, r := range fl {

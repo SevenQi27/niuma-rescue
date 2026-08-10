@@ -106,7 +106,7 @@ func runSchemaCommand(ensure bool) int {
 	fmt.Printf("%s: %v\n", FTaskType, taskType != nil)
 	fmt.Printf("%s/%s: %v\n", FStatus, SBug, hasOption(status, SBug))
 	if !ensure {
-		if taskType == nil || !hasOption(taskType, TaskRequirement) || !hasOption(taskType, TaskBug) || !hasOption(status, SBug) {
+		if taskType == nil || !hasOption(taskType, TaskRequirement) || !hasOption(taskType, TaskBug) || !hasOption(status, SBug) || !hasOption(status, SCodeWait) {
 			return 2
 		}
 		return 0
@@ -137,13 +137,20 @@ func runSchemaCommand(ensure bool) int {
 			}
 		}
 	}
-	changed, err := ensureOption(fs, status, SBug, 4)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "更新状态字段失败:", err)
-		return 1
-	}
-	if changed {
-		fmt.Println("added option:", FStatus+"/"+SBug)
+	for _, option := range []struct {
+		name  string
+		color int
+	}{{SBug, 4}, {SCodeWait, 2}} {
+		changed, err := ensureOption(fs, status, option.name, option.color)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "更新状态字段失败:", err)
+			return 1
+		}
+		if changed {
+			fmt.Println("added option:", FStatus+"/"+option.name)
+			fields, _ = fs.listFields()
+			status = fieldByName(fields, FStatus)
+		}
 	}
 	fmt.Println("Bug schema ready")
 	return 0

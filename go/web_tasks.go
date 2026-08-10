@@ -12,26 +12,27 @@ import (
 // webTask is the task-center view shared by the Bug and requirement tabs.
 // The legacy /api/bugs API remains available for existing LAN clients.
 type webTask struct {
-	ID            string        `json:"id"`
-	TaskType      string        `json:"task_type"`
-	Title         string        `json:"title"`
-	Description   string        `json:"description"`
-	Clarification string        `json:"clarification"`
-	PRD           string        `json:"prd"`
-	Status        string        `json:"status"`
-	Workspace     string        `json:"workspace"`
-	ClarifyAgent  string        `json:"clarify_agent"`
-	CodeAgent     string        `json:"code_agent"`
-	FixAgent      string        `json:"fix_agent"`
-	ReviewAgent   string        `json:"review_agent"`
-	Link          string        `json:"link"`
-	Log           string        `json:"log"`
-	Attachments   []webBugImage `json:"attachments"`
-	Editable      bool          `json:"editable"`
-	Startable     bool          `json:"startable"`
-	SyncState     string        `json:"sync_state"`
-	SyncError     string        `json:"sync_error"`
-	ExternalID    string        `json:"external_id"`
+	ID            string              `json:"id"`
+	TaskType      string              `json:"task_type"`
+	Title         string              `json:"title"`
+	Description   string              `json:"description"`
+	Clarification string              `json:"clarification"`
+	PRD           string              `json:"prd"`
+	Status        string              `json:"status"`
+	Workspace     string              `json:"workspace"`
+	ClarifyAgent  string              `json:"clarify_agent"`
+	CodeAgent     string              `json:"code_agent"`
+	FixAgent      string              `json:"fix_agent"`
+	ReviewAgent   string              `json:"review_agent"`
+	Link          string              `json:"link"`
+	Log           string              `json:"log"`
+	Attachments   []webBugImage       `json:"attachments"`
+	Editable      bool                `json:"editable"`
+	Startable     bool                `json:"startable"`
+	SyncState     string              `json:"sync_state"`
+	SyncError     string              `json:"sync_error"`
+	ExternalID    string              `json:"external_id"`
+	Coordination  *webBugCoordination `json:"coordination,omitempty"`
 }
 
 type webTaskInput struct {
@@ -120,6 +121,7 @@ func (c *bugConsole) listTasks(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		task := webTaskFromRecord(&records[i])
+		task.Coordination = c.webCoordination(&records[i], records)
 		if provider, ok := c.fs.(interface {
 			recordMeta(string) (recordSyncMeta, error)
 		}); ok {
@@ -130,8 +132,8 @@ func (c *bugConsole) listTasks(w http.ResponseWriter, r *http.Request) {
 		tasks = append(tasks, task)
 	}
 	order := map[string]int{
-		SBlocked: 0, SAnswer: 1, SConfirm: 2, SSetup: 3, SDevReady: 4,
-		SClarify: 5, SDev: 6, SBug: 6, SReview: 7, SMerge: 8, SDone: 9,
+		SBlocked: 0, SCodeWait: 1, SAnswer: 2, SConfirm: 3, SSetup: 4, SDevReady: 5,
+		SClarify: 6, SDev: 7, SBug: 7, SReview: 8, SMerge: 9, SDone: 10,
 	}
 	sort.SliceStable(tasks, func(i, j int) bool {
 		left, lok := order[tasks[i].Status]
@@ -336,7 +338,7 @@ func validateWebTaskInput(input webTaskInput) string {
 	}
 	if input.TaskType == TaskBug {
 		if !validBugAgent(input.FixAgent) {
-			return "修复 Agent 只能选择 codex 或 cursor"
+			return "修复 Agent 只能选择 claude、codex 或 cursor"
 		}
 		return ""
 	}
@@ -533,6 +535,7 @@ func (c *bugConsole) archiveTask(w http.ResponseWriter, id string) {
 	}
 	if c.app != nil {
 		c.app.st.clear(id, "archived from web task center")
+		c.app.releaseBugCoordination(id, "archived")
 	}
 	if err := archiver.archiveRecord(id); err != nil {
 		writeWebError(w, http.StatusBadGateway, err.Error())

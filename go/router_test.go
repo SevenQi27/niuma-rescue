@@ -10,8 +10,8 @@ func TestParseIntakeRequirement(t *testing.T) {
 }
 
 func TestParseIntakeBug(t *testing.T) {
-	body, agent, ws, taskType, ok := parseIntake("Bug@cursor: 登录接口偶发 500 #backend")
-	if !ok || body != "登录接口偶发 500" || agent != "cursor" || ws != "backend" || taskType != TaskBug {
+	body, agent, ws, taskType, ok := parseIntake("Bug@claude: 登录接口偶发 500 #backend")
+	if !ok || body != "登录接口偶发 500" || agent != "claude" || ws != "backend" || taskType != TaskBug {
 		t.Fatalf("unexpected parse result: ok=%v body=%q agent=%q ws=%q type=%q", ok, body, agent, ws, taskType)
 	}
 }
@@ -20,16 +20,31 @@ func TestBugAgentPairAlwaysDistinct(t *testing.T) {
 	tests := []struct {
 		requested, wantFix, wantReview string
 	}{
-		{"", "codex", "cursor"},
+		{"", "claude", "codex"},
+		{"claude", "claude", "codex"},
 		{"cursor", "cursor", "codex"},
-		{"codex", "codex", "cursor"},
-		{"gemini", "codex", "cursor"},
+		{"codex", "codex", "claude"},
+		{"gemini", "claude", "codex"},
 	}
 	for _, tt := range tests {
-		fix, review := bugAgentPair(tt.requested, "codex", "cursor")
+		fix, review := bugAgentPair(tt.requested, "claude", "codex")
 		if fix != tt.wantFix || review != tt.wantReview || fix == review {
 			t.Fatalf("requested=%q got %s/%s want %s/%s", tt.requested, fix, review, tt.wantFix, tt.wantReview)
 		}
+	}
+}
+
+func TestValidatePipelineSettingsAllowsClaudeAndCodex(t *testing.T) {
+	settings := pipelineSettings{
+		BugFixAgent: "claude", BugReviewAgent: "codex", BugRepairLimit: 2,
+		TimeoutCode: 1800, TimeoutReview: 900, TimeoutBug: 3600,
+	}
+	if err := validatePipelineSettings(settings); err != nil {
+		t.Fatalf("validatePipelineSettings() rejected Claude/Codex: %v", err)
+	}
+	settings.BugReviewAgent = "claude"
+	if err := validatePipelineSettings(settings); err == nil {
+		t.Fatal("validatePipelineSettings() accepted identical fix/review agents")
 	}
 }
 

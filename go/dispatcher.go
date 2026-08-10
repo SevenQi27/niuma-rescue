@@ -319,22 +319,29 @@ func (a *App) handleDevelop(rec *Record, runID string) {
 	f := rec.Fields
 	chat := fieldText(f[FChat])
 	a.gitMu.Lock()
-	wt, branch, err := scmPrepare(ws, rid)
+	prepared, err := a.prepareCodeTask(ws, "REQ", rid)
 	a.gitMu.Unlock()
 	if err != nil {
 		a.onFailure(rec, "worktree: "+err.Error(), "")
 		return
 	}
+	wt, branch := prepared.Worktree, prepared.Branch
 	a.writeDossier(wt, rid, f)
 	engine := a.resolveAgent(rec, "code", cfg.EngineCode)
 	a.noteAgent(rec, "code", engine)
 	changed := productChangedFiles(changedFiles(ws, wt))
-	if len(changed) == 0 {
+	if prepared.SessionID != "" {
+		changed = productChangedFiles(changedFilesFrom(wt, prepared.CompareRef))
+	}
+	if len(changed) == 0 || prepared.TaskState == "repair" {
 		a.fs.notify(chat, "🔧 开始开发（"+engine+"）：写代码 + 跑测试，可能需要几分钟，请稍候…")
 		prog := a.makeProgress(chat, recTitle(rec), "开发", engine, runID)
 		prompt := buildPrompt("code", map[string]string{"req_id": rid, "dossier": a.dossierDir(wt, rid)})
 		res := runAgent(engine, prompt, wt, cfg.TimeoutCode, agentLog, prog)
 		changed = productChangedFiles(changedFiles(ws, wt))
+		if prepared.SessionID != "" {
+			changed = productChangedFiles(changedFilesFrom(wt, prepared.CompareRef))
+		}
 		if !res.OK {
 			if len(changed) == 0 {
 				a.onFailure(rec, "coder("+engine+") 调用失败且没有产生改动: "+trunc(res.Output, 500), "")
@@ -343,21 +350,34 @@ func (a *App) handleDevelop(rec *Record, runID string) {
 			a.fs.notify(chat, "⚠️ "+engine+" 返回失败，但检测到已产生 "+itoa(len(changed))+" 个文件改动；继续执行验收门。\n"+trunc(res.Output, 300))
 			emit("dispatcher", "agent_failed_with_changes", map[string]any{"record_id": rid, "engine": engine, "changed": len(changed)})
 		}
-		if !ws.inline() {
+		if !ws.inline() && len(productWorkingTreeChanges(wt)) > 0 {
 			a.gitMu.Lock()
-			gitCommitAll(wt, "[niuma] REQ-"+rid)
+			_, err = a.commitDevelopmentTask(prepared, rid, "[niuma] REQ-"+rid)
 			a.gitMu.Unlock()
+			if err != nil {
+				a.onFailure(rec, "提交任务改动失败: "+err.Error(), "")
+				return
+			}
 		}
 		changed = productChangedFiles(changedFiles(ws, wt))
+		if prepared.SessionID != "" {
+			changed = productChangedFiles(changedFilesFrom(wt, prepared.CompareRef))
+		}
 	}
 	okTest, detail := a.runGate(ws, wt)
 	emit("dispatcher", "gate_done", map[string]any{"record_id": rid, "ok": okTest})
 	if !okTest {
+		if prepared.SessionID != "" {
+			a.st.markDevelopmentTask(rid, prepared.CommitSHA, "repair")
+		}
 		a.fs.notify(chat, "❌ 测试未通过，将重试（"+engine+"）。")
 		a.onFailure(rec, "测试未通过: "+tail(detail, 400), "")
 		return
 	}
 	pub := afterDevelop(ws, wt, branch)
+	if prepared.SessionID != "" {
+		pub = pubResult{OK: true, Note: "任务临时分支已提交，Review 通过后进入共享会话", Link: branch}
+	}
 	if !pub.OK {
 		a.onFailure(rec, "发布失败: "+pub.Detail, "")
 		return
@@ -478,15 +498,20 @@ func (a *App) handleReview(rec *Record, runID string) {
 	chat := fieldText(f[FChat])
 	ws := a.workspaceFor(rec)
 	a.gitMu.Lock()
-	wt, branch, err := scmPrepare(ws, rid)
+	prepared, err := a.prepareCodeTask(ws, "REQ", rid)
 	a.gitMu.Unlock()
 	if err != nil {
 		a.onFailure(rec, "worktree: "+err.Error(), "")
 		return
 	}
+	wt, branch := prepared.Worktree, prepared.Branch
 	engine := a.resolveAgent(rec, "review", cfg.EngineReview)
 	a.noteAgent(rec, "review", engine)
-	prompt := buildPrompt("review", map[string]string{"dossier": a.dossierDir(wt, rid), "diff": diffText(ws, wt)})
+	diff := diffText(ws, wt)
+	if prepared.SessionID != "" {
+		diff = diffTextFrom(wt, prepared.CompareRef)
+	}
+	prompt := buildPrompt("review", map[string]string{"dossier": a.dossierDir(wt, rid), "diff": diff})
 	a.fs.notify(chat, "🔍 开始 Review（"+engine+"）：审查改动中…")
 	prog := a.makeProgress(chat, recTitle(rec), "Review", engine, runID)
 	res := runAgent(engine, prompt, wt, cfg.TimeoutReview, agentLog, prog)
@@ -499,7 +524,18 @@ func (a *App) handleReview(rec *Record, runID string) {
 		if title == "" {
 			title = branch
 		}
-		pub := afterReview(ws, wt, branch, title, fieldText(f[FPRD]))
+		publishWS, publishWT, publishBranch := ws, wt, branch
+		if prepared.SessionID != "" {
+			a.gitMu.Lock()
+			session, integrationErr := a.integrateDevelopmentTask(prepared, rid)
+			a.gitMu.Unlock()
+			if integrationErr != nil {
+				a.onFailure(rec, "进入共享开发会话失败: "+integrationErr.Error(), "")
+				return
+			}
+			publishWT, publishBranch = session.Worktree, session.Branch
+		}
+		pub := afterReview(publishWS, publishWT, publishBranch, title, fieldText(f[FPRD]))
 		if !pub.OK {
 			a.onFailure(rec, "发布失败: "+pub.Detail, "")
 			return
@@ -515,6 +551,9 @@ func (a *App) handleReview(rec *Record, runID string) {
 		a.fs.notify(chat, "✅ Review 通过（"+engine+"）！"+pub.Note+"。")
 		a.fs.notifyCard(chat, mergeCard(rec))
 	} else {
+		if prepared.SessionID != "" {
+			a.st.markDevelopmentTask(rid, prepared.CommitSHA, "repair")
+		}
 		a.fs.notify(chat, "🛠 Review 未通过，打回开发：\n"+trunc(res.Output, 500))
 		a.onFailure(rec, "Review 未过:\n"+trunc(res.Output, 400), SDev)
 	}
@@ -532,9 +571,10 @@ func anyCodeFile(files []string) bool {
 	return false
 }
 
-func runTest(cmdStr, dir string) (int, string) {
+func runTest(cmdStr, dir string, ws Workspace) (int, string) {
 	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = dir
+	cmd.Env = workspaceToolEnv(scrubbedEnv(), ws)
 	out, _ := cmd.CombinedOutput()
 	return cmd.ProcessState.ExitCode(), string(out)
 }
@@ -556,7 +596,7 @@ func (a *App) runGate(ws Workspace, wt string) (bool, string) {
 	if !anyCodeFile(changedFiles(ws, wt)) {
 		return true, "纯非代码改动，跳过验收门"
 	}
-	afterRC, afterOut := runTest(ws.TestCmd, wt)
+	afterRC, afterOut := runTest(ws.TestCmd, wt, ws)
 	if afterRC == 0 {
 		return true, "验收门通过（绿）"
 	}
@@ -598,7 +638,7 @@ func (a *App) baselineRun(ws Workspace) (int, string, bool) {
 	if _, err := os.Stat(filepath.Join(ws.Path, "node_modules")); err == nil {
 		os.Symlink(filepath.Join(ws.Path, "node_modules"), filepath.Join(tmp, "node_modules"))
 	}
-	rc, out := runTest(ws.TestCmd, tmp)
+	rc, out := runTest(ws.TestCmd, tmp, ws)
 	return rc, out, true
 }
 
@@ -623,15 +663,16 @@ func (a *App) runStage(status string, rec *Record, runID string) (err error) {
 }
 
 func (a *App) processChain(rec *Record) {
-	// inline 工作区共享同一棵工作树：开发/Review 必须按工作区独占。
+	// inline 或显式 serial 的工作区共享执行锁；共享会话的 parallel 模式只在最终
+	// Git 集成时使用 gitMu，耗时的 Agent 阶段仍可并行。
 	// 澄清若开了合批（BatchClarify），也按工作区独占——一次 agent 处理该工作区所有待澄清；
 	// 没开合批则澄清只读、放开并行。
 	status := fieldText(rec.Fields[FStatus])
-	needLock := status != SBug && (status != SClarify || cfg.BatchClarify)
-	if ws := a.workspaceFor(rec); ws.inline() && needLock {
+	needLock := status == SDev || status == SBug || status == SReview || (status == SClarify && cfg.BatchClarify)
+	if ws := a.workspaceFor(rec); ws.serialCodeQueue() && needLock {
 		lk := a.wsLock(ws.Key)
 		if !lk.TryLock() {
-			logf("跳过「%s」· 工作区 %s 正被占用（inline 串行）", recTitle(rec), ws.Key)
+			logf("跳过「%s」· 工作区 %s 正被占用（串行执行策略）", recTitle(rec), ws.Key)
 			return
 		}
 		defer lk.Unlock()
@@ -675,6 +716,7 @@ func (a *App) tick() {
 		elog("list records 失败: %v", err)
 		return
 	}
+	a.reconcileBugWaiters(records)
 	var actionable []Record
 	for _, r := range records {
 		if Actionable[fieldText(r.Fields[FStatus])] {
