@@ -225,11 +225,17 @@ func TestGitCommitExcludesPipelineDossier(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dossier, "screen.png"), []byte("image"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if files := productWorkingTreeChanges(repo); len(files) != 1 || files[0] != "app.txt" {
+		t.Fatalf("unexpected product working tree changes: %#v", files)
+	}
 	if err := gitCommitAllChecked(repo, "fix"); err != nil {
 		t.Fatal(err)
 	}
 	tracked, err := git(repo, "ls-files", dossierDir)
 	if err != nil || strings.TrimSpace(tracked) != "" {
 		t.Fatalf("pipeline dossier must not be committed: %q err=%v", tracked, err)
+	}
+	if files := productWorkingTreeChanges(repo); len(files) != 0 {
+		t.Fatalf("pipeline dossier must not count as product changes: %#v", files)
 	}
 }

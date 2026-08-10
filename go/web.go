@@ -49,7 +49,6 @@ type storedWebImage struct {
 
 const (
 	webImageLogPrefix = "[web-image] "
-	maxWebImages      = 5
 	maxWebImageBytes  = 8 << 20
 )
 
@@ -134,6 +133,8 @@ func (c *bugConsole) handler() http.Handler {
 	mux.HandleFunc("/api/integrations/", c.handleIntegrationEvent)
 	mux.HandleFunc("/api/admin/pipeline", c.handleAdminPipeline)
 	mux.HandleFunc("/api/admin/workspaces", c.handleAdminWorkspaces)
+	mux.HandleFunc("/api/admin/development-sessions", c.handleAdminDevelopmentSessions)
+	mux.HandleFunc("/api/admin/development-sessions/", c.handleAdminDevelopmentSession)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -292,7 +293,7 @@ func (c *bugConsole) listBugs(w http.ResponseWriter) {
 			bugs = append(bugs, bug)
 		}
 	}
-	order := map[string]int{SBlocked: 0, SAnswer: 1, SSetup: 2, SBug: 3, SReview: 4, SMerge: 5, SDone: 6}
+	order := map[string]int{SBlocked: 0, SCodeWait: 1, SAnswer: 2, SSetup: 3, SBug: 4, SReview: 5, SMerge: 6, SDone: 7}
 	sort.SliceStable(bugs, func(i, j int) bool {
 		left, lok := order[bugs[i].Status]
 		right, rok := order[bugs[j].Status]
@@ -373,22 +374,11 @@ func (c *bugConsole) uploadBugImages(w http.ResponseWriter, r *http.Request, id 
 		writeWebError(w, http.StatusConflict, "当前状态「"+status+"」不能添加附件")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxWebImages*maxWebImageBytes+(1<<20))
-	if err := r.ParseMultipartForm(maxWebImageBytes); err != nil {
-		writeWebError(w, http.StatusBadRequest, "附件上传内容无效或过大")
-		return
-	}
-	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
-	}
-	files := r.MultipartForm.File["images"]
-	existing := storedWebImages(fieldText(rec.Fields[FLog]))
-	if len(files) == 0 {
-		writeWebError(w, http.StatusBadRequest, "请选择要上传的附件")
-		return
-	}
-	if len(existing)+len(files) > maxWebImages {
-		writeWebError(w, http.StatusBadRequest, "每个任务最多上传 5 个附件")
+	// 多附件采用流式读取；仅约束单文件大小，不用文件数量推导请求上限。
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(30 * time.Minute))
+	reader, err := r.MultipartReader()
+	if err != nil {
+		writeWebError(w, http.StatusBadRequest, "附件上传内容无效")
 		return
 	}
 	dir := filepath.Join(c.stateDir, "bug-images", id)
@@ -402,27 +392,29 @@ func (c *bugConsole) uploadBugImages(w http.ResponseWriter, r *http.Request, id 
 			_ = os.Remove(path)
 		}
 	}
-	added := make([]storedWebImage, 0, len(files))
-	for _, header := range files {
-		if header.Size > maxWebImageBytes {
-			cleanup()
-			writeWebError(w, http.StatusBadRequest, "单个附件不能超过 8MB")
-			return
+	added := make([]storedWebImage, 0)
+	for {
+		part, nextErr := reader.NextPart()
+		if errors.Is(nextErr, io.EOF) {
+			break
 		}
-		file, err := header.Open()
-		if err != nil {
+		if nextErr != nil {
 			cleanup()
 			writeWebError(w, http.StatusBadRequest, "读取上传附件失败")
 			return
 		}
-		body, readErr := io.ReadAll(io.LimitReader(file, maxWebImageBytes+1))
-		file.Close()
+		if part.FormName() != "images" || part.FileName() == "" {
+			part.Close()
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(part, maxWebImageBytes+1))
+		part.Close()
 		if readErr != nil || len(body) == 0 || len(body) > maxWebImageBytes {
 			cleanup()
 			writeWebError(w, http.StatusBadRequest, "附件为空或超过 8MB")
 			return
 		}
-		ext, mimeType := webAttachmentType(header.Filename, body)
+		ext, mimeType := webAttachmentType(part.FileName(), body)
 		if ext == "" {
 			cleanup()
 			writeWebError(w, http.StatusBadRequest, "仅支持图片、PDF、XLSX、XLS 或 CSV 文件")
@@ -442,11 +434,15 @@ func (c *bugConsole) uploadBugImages(w http.ResponseWriter, r *http.Request, id 
 			return
 		}
 		saved = append(saved, path)
-		name := singleLine(filepath.Base(header.Filename), 120)
+		name := singleLine(filepath.Base(part.FileName()), 120)
 		if name == "" {
 			name = "任务附件"
 		}
 		added = append(added, storedWebImage{File: storedName, Name: name, MIME: mimeType})
+	}
+	if len(added) == 0 {
+		writeWebError(w, http.StatusBadRequest, "请选择要上传的附件")
+		return
 	}
 	logText := fieldText(rec.Fields[FLog])
 	for _, image := range added {
@@ -736,7 +732,7 @@ func validateWebBugInput(input webBugInput) string {
 		return "工作区无效：" + err.Error()
 	}
 	if !validBugAgent(input.FixAgent) {
-		return "修复 Agent 只能选择 codex 或 cursor"
+		return "修复 Agent 只能选择 claude、codex 或 cursor"
 	}
 	return ""
 }

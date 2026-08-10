@@ -198,6 +198,7 @@ func pipelineSteps(rec *Record) []webPipelineStep {
 	return []webPipelineStep{
 		{Stage: "prepare", Label: "准备隔离分支", State: "pending", Actor: "Niuma"},
 		{Stage: "investigate", Label: "AI 调查", State: "pending", Actor: fix},
+		{Stage: "coordinate", Label: "代码范围协调", State: "pending", Actor: "Niuma"},
 		{Stage: "fix", Label: "AI 修复", State: "pending", Actor: fix},
 		{Stage: "test", Label: "自动验证", State: "pending", Actor: "Niuma"},
 		{Stage: "review", Label: "独立 Review", State: "pending", Actor: review},
@@ -285,12 +286,19 @@ func normalizePipelineSteps(steps []webPipelineStep, status, logText string) {
 		if !hasPipelineState(steps, "running") {
 			markFirstPipelineStep(steps, "running", "流水线正在执行")
 		}
+	case SCodeWait:
+		setDone(0)
+		setDone(1)
+		steps[2].State = "waiting"
+		if steps[2].Detail == "" {
+			steps[2].Detail = "等待前置任务 Review 通过后自动继续"
+		}
 	case SMerge:
-		for i := 0; i < 5; i++ {
+		for i := 0; i < len(steps)-1; i++ {
 			steps[i].State = "done"
 		}
-		steps[5].State = "waiting"
-		steps[5].Detail = "修复已准备好，等待人工检查并合并"
+		steps[len(steps)-1].State = "waiting"
+		steps[len(steps)-1].Detail = "修复已准备好，等待人工检查并合并"
 	case SDone:
 		for i := range steps {
 			steps[i].State = "done"

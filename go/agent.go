@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -18,6 +20,7 @@ type AgentResult struct {
 	Output       string
 	Duration     float64
 	ArtifactsDir string
+	SessionID    string
 }
 
 var baseErrorMarkers = []string{
@@ -133,14 +136,39 @@ func (s *cursorSink) finalText() string {
 func (s *cursorSink) errorBlob() string { return strings.Join(s.errLines, "\n") }
 func (s *cursorSink) isError() bool     { return s.hasResult && s.isErr }
 
-func agentArgv(engine string) []string {
+func agentArgv(engine, sessionID string) []string {
+	return agentArgvWithAccess(engine, sessionID, false)
+}
+
+func agentArgvWithAccess(engine, sessionID string, writeAccess bool) []string {
 	base, ok := AgentCmds[engine]
 	if !ok {
 		return nil
 	}
+	base = append([]string{}, base...)
+	if engine == "claude" && writeAccess {
+		base = append(base, "--permission-mode", "acceptEdits")
+	}
+	if engine == "claude" && strings.TrimSpace(sessionID) != "" {
+		return append(base, "--resume", strings.TrimSpace(sessionID))
+	}
+	if engine == "codex" && strings.TrimSpace(sessionID) != "" {
+		return []string{base[0], "exec", "resume", strings.TrimSpace(sessionID), "-"}
+	}
 	// 尊重配置里的 --output-format：stream-json 走事件解析 + 活跃度看门狗；text 走裸文本。
 	// 注意 cursor 的 composer-2.5（非 fast）只在 text 模式可用，stream-json 会被拒。
-	return append([]string{}, base...)
+	return base
+}
+
+func newAgentSessionID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return ""
+	}
+	raw[6] = (raw[6] & 0x0f) | 0x40
+	raw[8] = (raw[8] & 0x3f) | 0x80
+	hexID := hex.EncodeToString(raw[:])
+	return hexID[:8] + "-" + hexID[8:12] + "-" + hexID[12:16] + "-" + hexID[16:20] + "-" + hexID[20:]
 }
 
 func hasStreamJSON(argv []string) bool {
@@ -197,17 +225,43 @@ type tagLine struct{ tag, line string }
 
 // 瞬时错误（多为 cursor 的网络/TLS 抖动）——立即重试即可，不该判失败更不该计入熔断。
 var transientRe = regexp.MustCompile(`(?i)aborted|socket disconnected|retriableerror|secure tls|econnreset|connection reset|broken pipe|bad gateway|service unavailable|temporarily unavailable|i/o timeout|\b50[234]\b`)
+var codexSessionIDRe = regexp.MustCompile(`(?im)^session id:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$`)
+
+func extractCodexSessionID(lines ...[]string) string {
+	for _, group := range lines {
+		match := codexSessionIDRe.FindStringSubmatch(strings.Join(group, "\n"))
+		if len(match) == 2 {
+			return strings.ToLower(match[1])
+		}
+	}
+	return ""
+}
 
 // runAgent：在 runAgentOnce 外套一层"瞬时错误自动重试"。
 // 网络/TLS 类报错立即重试 AgentRetries 次（短退避），把大多数 cursor 抖动悄悄吞掉。
 func runAgent(engine, prompt, cwd string, timeout int, lg func(string), onProgress func(map[string]any)) AgentResult {
+	return runAgentInSession(engine, prompt, cwd, timeout, "", lg, onProgress)
+}
+
+// runAgentInSession 允许 Claude/Codex 继续同一个明确的 CLI session；其他引擎保持原有一次性调用。
+func runAgentInSession(engine, prompt, cwd string, timeout int, sessionID string, lg func(string), onProgress func(map[string]any)) AgentResult {
+	return runAgentInSessionWithAccess(engine, prompt, cwd, timeout, sessionID, false, lg, onProgress)
+}
+
+// runAgentInSessionWithAccess 只在明确的写代码阶段为 Agent 开启非交互写权限。
+// 调查、澄清和 Review 保持默认只读权限，避免全局绕过权限检查。
+func runAgentInSessionWithAccess(engine, prompt, cwd string, timeout int, sessionID string, writeAccess bool, lg func(string), onProgress func(map[string]any)) AgentResult {
 	tries := cfg.AgentRetries + 1
 	if tries < 1 {
 		tries = 1
 	}
 	var res AgentResult
+	activeSessionID := strings.TrimSpace(sessionID)
 	for try := 1; try <= tries; try++ {
-		res = runAgentOnce(engine, prompt, cwd, timeout, lg, onProgress)
+		res = runAgentOnce(engine, prompt, cwd, timeout, activeSessionID, writeAccess, lg, onProgress)
+		if res.SessionID != "" {
+			activeSessionID = res.SessionID
+		}
 		if res.OK || !transientRe.MatchString(res.Output) {
 			return res
 		}
@@ -226,8 +280,15 @@ func runAgent(engine, prompt, cwd string, timeout int, lg func(string), onProgre
 // runAgentOnce 单次执行：Popen + 读取 goroutine + 看门狗。
 // 总超时兜底；无输出超 Inactivity 即判卡死杀掉——但出过首行输出后才武装（沉默到底的引擎不误杀）。
 // 按时间触发 onProgress 心跳。
-func runAgentOnce(engine, prompt, cwd string, timeout int, lg func(string), onProgress func(map[string]any)) AgentResult {
-	argv := agentArgv(engine)
+func runAgentOnce(engine, prompt, cwd string, timeout int, sessionID string, writeAccess bool, lg func(string), onProgress func(map[string]any)) AgentResult {
+	resolvedSessionID := strings.TrimSpace(sessionID)
+	argv := agentArgvWithAccess(engine, resolvedSessionID, writeAccess)
+	if engine == "claude" && resolvedSessionID == "" {
+		resolvedSessionID = newAgentSessionID()
+		if resolvedSessionID != "" {
+			argv = append(argv, "--session-id", resolvedSessionID)
+		}
+	}
 	if argv == nil {
 		return AgentResult{OK: false, Output: "unknown agent: " + engine}
 	}
@@ -246,7 +307,7 @@ func runAgentOnce(engine, prompt, cwd string, timeout int, lg func(string), onPr
 
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = scrubbedEnv()
+	cmd.Env = workspaceToolEnvForDir(scrubbedEnv(), cwd)
 	stdin, _ := cmd.StdinPipe()
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
@@ -255,8 +316,8 @@ func runAgentOnce(engine, prompt, cwd string, timeout int, lg func(string), onPr
 		if lg != nil {
 			lg("  找不到命令 `" + argv[0] + "` —— 该引擎 CLI 没装或不在 PATH")
 		}
-		writeAgentArtifacts(artDir, engine, cwd, argv, -1, 0, nil, []string{err.Error()}, "command not found: "+argv[0])
-		return AgentResult{OK: false, Output: "command not found: " + argv[0] + "\n日志: " + artDir, ArtifactsDir: artDir}
+		writeAgentArtifacts(artDir, engine, cwd, argv, -1, 0, nil, []string{err.Error()}, "command not found: "+argv[0], resolvedSessionID)
+		return AgentResult{OK: false, Output: "command not found: " + argv[0] + "\n日志: " + artDir, ArtifactsDir: artDir, SessionID: resolvedSessionID}
 	}
 	go func() { io.WriteString(stdin, prompt); stdin.Close() }()
 
@@ -323,6 +384,11 @@ loop:
 		}
 	}
 	duration := time.Since(start).Seconds()
+	if engine == "codex" {
+		if detected := extractCodexSessionID(errLines, outLines); detected != "" {
+			resolvedSessionID = detected
+		}
+	}
 
 	if killed != "" {
 		_ = cmd.Process.Kill()
@@ -337,8 +403,8 @@ loop:
 		if lg != nil {
 			lg("  " + msg)
 		}
-		writeAgentArtifacts(artDir, engine, cwd, argv, -1, duration, outLines, errLines, msg)
-		return AgentResult{OK: false, Output: msg + "\n日志: " + artDir, Duration: duration, ArtifactsDir: artDir}
+		writeAgentArtifacts(artDir, engine, cwd, argv, -1, duration, outLines, errLines, msg, resolvedSessionID)
+		return AgentResult{OK: false, Output: msg + "\n日志: " + artDir, Duration: duration, ArtifactsDir: artDir, SessionID: resolvedSessionID}
 	}
 
 	cmd.Wait()
@@ -360,7 +426,8 @@ loop:
 	}
 	res.Duration = duration
 	res.ArtifactsDir = artDir
-	writeAgentArtifacts(artDir, engine, cwd, argv, rc, duration, outLines, errLines, res.Output)
+	res.SessionID = resolvedSessionID
+	writeAgentArtifacts(artDir, engine, cwd, argv, rc, duration, outLines, errLines, res.Output, resolvedSessionID)
 	if !res.OK {
 		res.Output = strings.TrimSpace(res.Output) + "\n日志: " + artDir
 	}
@@ -372,7 +439,7 @@ func agentArtifactDir(engine string) string {
 	return filepath.Join(stateDir(), "agent-runs", name)
 }
 
-func writeAgentArtifacts(dir, engine, cwd string, argv []string, rc int, duration float64, stdout, stderr []string, result string) {
+func writeAgentArtifacts(dir, engine, cwd string, argv []string, rc int, duration float64, stdout, stderr []string, result, sessionID string) {
 	_ = os.MkdirAll(dir, 0o755)
 	_ = os.WriteFile(filepath.Join(dir, "stdout.log"), []byte(strings.Join(stdout, "\n")), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "stderr.log"), []byte(strings.Join(stderr, "\n")), 0o644)
@@ -384,6 +451,9 @@ func writeAgentArtifacts(dir, engine, cwd string, argv []string, rc int, duratio
 		"return":   rc,
 		"duration": round1(duration),
 		"time":     time.Now().Format("2006-01-02 15:04:05 -0700"),
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		meta["session_id"] = strings.TrimSpace(sessionID)
 	}
 	if b, err := json.MarshalIndent(meta, "", "  "); err == nil {
 		_ = os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o644)

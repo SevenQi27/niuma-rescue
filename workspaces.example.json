@@ -24,6 +24,21 @@
       "pr_enabled": false,
       "test_cmd": ""
     },
+    "daily-session-app": {
+      "path": "/absolute/path/to/large/repo",
+      "scm": "git",
+      "work_mode": "worktree",
+      "workspace_scope": "session",
+      "queue_mode": "parallel",
+      "session_rollover": "daily",
+      "delivery_target": "user_choose",
+      "track_upstream": false,
+      "worktree_base": "/absolute/path/to/worktree-folders",
+      "base": "origin/main",
+      "push_enabled": false,
+      "pr_enabled": false,
+      "test_cmd": ""
+    },
     "svn-app": {
       "path": "/absolute/path/to/local/svn-checkout-or-placeholder",
       "scm": "svn",

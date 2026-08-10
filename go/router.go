@@ -23,12 +23,12 @@ var commandHelp = `可用指令：
 
 新任务格式：
 需求：修改登录页按钮样式
-Bug@cursor：登录接口偶发 500
+Bug@claude：登录接口偶发 500
   发完会先停在「待选择」，选好 Agent/工作区点开始按钮才开跑（PIPELINE_SETUP_GATE=0 可关）。`
 
 var activeStatuses = map[string]bool{
 	SSetup: true, SClarify: true, SAnswer: true, SConfirm: true,
-	SDevReady: true, SDev: true, SBug: true, SReview: true, SMerge: true, SBlocked: true,
+	SDevReady: true, SDev: true, SBug: true, SCodeWait: true, SReview: true, SMerge: true, SBlocked: true,
 }
 
 func parseIntake(text string) (body, agent, wsKey, taskType string, ok bool) {
@@ -337,7 +337,7 @@ func (a *App) handleMessage(msg map[string]any) bool {
 	// 新需求
 	body, agent, wsKey, taskType, ok := parseIntake(text)
 	if !ok {
-		a.fs.sendText(chatID, "发「需求：<描述>」或「Bug@codex：<现象>」给我，就能提交任务开始走流水线。")
+		a.fs.sendText(chatID, "发「需求：<描述>」或「Bug@claude：<现象>」给我，就能提交任务开始走流水线。")
 		return false
 	}
 	// 幂等：同会话+同描述已有在途记录 → 跳过

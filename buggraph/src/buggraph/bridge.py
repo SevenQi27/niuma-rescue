@@ -12,17 +12,24 @@ class AgentReply:
     output: str
     duration: float = 0.0
     artifacts_dir: str = ""
+    session_id: str = ""
 
 
 class AgentBridge:
-    """Invoke Codex/Cursor through niuma's Go adapter."""
+    """Invoke Claude/Codex/Cursor through niuma's Go adapter."""
 
     def __init__(self, runner: str) -> None:
         self.runner = runner
 
-    def run(self, *, engine: str, cwd: str, prompt: str, timeout: int) -> AgentReply:
+    def run(
+        self, *, engine: str, cwd: str, prompt: str, timeout: int,
+        session_id: str = "", write_access: bool = False,
+    ) -> AgentReply:
         request = json.dumps(
-            {"engine": engine, "cwd": cwd, "prompt": prompt, "timeout": timeout},
+            {
+                "engine": engine, "cwd": cwd, "prompt": prompt, "timeout": timeout,
+                "session_id": session_id, "write_access": write_access,
+            },
             ensure_ascii=False,
         )
         try:
@@ -47,4 +54,5 @@ class AgentBridge:
             str(payload.get("output", "")),
             float(payload.get("duration", 0.0)),
             str(payload.get("artifacts_dir", "")),
+            str(payload.get("session_id", "")),
         )

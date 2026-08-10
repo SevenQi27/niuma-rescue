@@ -108,6 +108,40 @@ func scmPrepareTask(ws Workspace, kind, taskID string, forceWorktree bool) (work
 	}
 	workPath = filepath.Join(base, kind+"-"+taskID)
 	branch = "niuma/" + kind + "-" + taskID
+	return scmPrepareNamedWorktree(ws, workPath, branch)
+}
+
+// scmPrepareSession 为一组串行任务准备同一个共享 worktree。会话名由调度层根据
+// rollover 策略生成；这里仅负责从配置基线创建且确保分支没有 upstream。
+func scmPrepareSession(ws Workspace, sessionID string) (workPath, branch string, err error) {
+	base := strings.TrimSpace(ws.WorktreeBase)
+	if base == "" {
+		base = filepath.Join(cfg.WorktreeBase, ws.safeKey())
+	}
+	if e := os.MkdirAll(base, 0o755); e != nil {
+		return "", "", e
+	}
+	workPath = filepath.Join(base, "SESSION-"+sessionID)
+	branch = "niuma/session-" + sessionID
+	return scmPrepareNamedWorktree(ws, workPath, branch)
+}
+
+func scmPrepareSessionTask(ws Workspace, sessionID, kind, taskID, startSHA string) (workPath, branch string, err error) {
+	base := strings.TrimSpace(ws.WorktreeBase)
+	if base == "" {
+		base = filepath.Join(cfg.WorktreeBase, ws.safeKey())
+	}
+	if e := os.MkdirAll(base, 0o755); e != nil {
+		return "", "", e
+	}
+	workPath = filepath.Join(base, "SESSION-"+sessionID+"-"+kind+"-"+taskID)
+	branch = "niuma/task-" + sessionID + "-" + strings.ToLower(kind) + "-" + taskID
+	taskWorkspace := ws
+	taskWorkspace.BaseRef = startSHA
+	return scmPrepareNamedWorktree(taskWorkspace, workPath, branch)
+}
+
+func scmPrepareNamedWorktree(ws Workspace, workPath, branch string) (string, string, error) {
 	if _, e := os.Stat(workPath); e == nil {
 		out, branchErr := git(workPath, "branch", "--show-current")
 		if branchErr != nil || strings.TrimSpace(out) != branch {
@@ -119,7 +153,7 @@ func scmPrepareTask(ws Workspace, kind, taskID string, forceWorktree bool) (work
 		if e := attachWorkspaceRules(workPath, ws.RulesSource); e != nil {
 			return "", "", e
 		}
-		return workPath, branch, nil // 复用同一任务的现有 worktree
+		return workPath, branch, nil
 	}
 	if strings.HasPrefix(ws.BaseRef, "origin/") {
 		if out, e := git(ws.Path, "fetch", "--quiet", "origin"); e != nil {
@@ -144,6 +178,25 @@ func scmPrepareTask(ws Workspace, kind, taskID string, forceWorktree bool) (work
 		return "", "", e
 	}
 	return workPath, branch, nil
+}
+
+// scmStackBugBranch 将尚未写代码的后续 Bug 分支快进到已 Review 的前置 Bug 分支。
+// 这样后续修复天然包含前置补丁，人工只需按依赖顺序合并。
+func scmStackBugBranch(workPath, predecessorBranch string) error {
+	predecessorBranch = strings.TrimSpace(predecessorBranch)
+	if predecessorBranch == "" {
+		return errf("前置任务分支为空")
+	}
+	if out, err := git(workPath, "diff", "--quiet"); err != nil {
+		return errf("后续任务已有未提交改动，不能自动接到前置分支: %s", strings.TrimSpace(out))
+	}
+	if out, err := git(workPath, "diff", "--cached", "--quiet"); err != nil {
+		return errf("后续任务已有暂存改动，不能自动接到前置分支: %s", strings.TrimSpace(out))
+	}
+	if out, err := git(workPath, "merge", "--ff-only", predecessorBranch); err != nil {
+		return errf("无法快进到前置分支 %s: %s", predecessorBranch, strings.TrimSpace(out))
+	}
+	return nil
 }
 
 func attachWorkspaceRules(workPath, source string) error {
@@ -231,6 +284,26 @@ func changedFiles(ws Workspace, wt string) []string {
 	return files
 }
 
+func changedFilesFrom(wt, ref string) []string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return productWorkingTreeChanges(wt)
+	}
+	out, _ := git(wt, "diff", "--name-only", ref)
+	untracked, _ := git(wt, "ls-files", "--others", "--exclude-standard")
+	out += "\n" + untracked
+	seen := map[string]bool{}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !seen[line] {
+			seen[line] = true
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
 func productChangedFiles(files []string) []string {
 	var out []string
 	for _, f := range files {
@@ -240,6 +313,29 @@ func productChangedFiles(files []string) []string {
 		out = append(out, f)
 	}
 	return out
+}
+
+func productWorkingTreeChanges(wt string) []string {
+	out, err := git(wt, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return nil
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 4 {
+			continue
+		}
+		name := strings.TrimSpace(line[3:])
+		if arrow := strings.LastIndex(name, " -> "); arrow >= 0 {
+			name = strings.TrimSpace(name[arrow+4:])
+		}
+		name = strings.Trim(name, `"`)
+		if name == dossierDir || strings.HasPrefix(name, dossierDir+"/") {
+			continue
+		}
+		files = append(files, name)
+	}
+	return files
 }
 
 func diffText(ws Workspace, wt string) string {
@@ -253,6 +349,19 @@ func diffText(ws Workspace, wt string) string {
 		return strings.TrimSpace(out + "\n" + body)
 	}
 	out, _ := git(wt, "diff", ws.BaseRef)
+	untracked, _ := git(wt, "ls-files", "--others", "--exclude-standard")
+	if strings.TrimSpace(untracked) != "" {
+		out += "\n\nUntracked files:\n" + untracked
+	}
+	return out
+}
+
+func diffTextFrom(wt, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	out, _ := git(wt, "diff", ref)
 	untracked, _ := git(wt, "ls-files", "--others", "--exclude-standard")
 	if strings.TrimSpace(untracked) != "" {
 		out += "\n\nUntracked files:\n" + untracked
@@ -281,9 +390,17 @@ func afterDevelop(ws Workspace, wt, branch string) pubResult {
 		return pubResult{OK: true, Note: "inline 模式：已保留在当前工作区，未提交/未推送", Link: branch}
 	}
 	if !ws.PushEnabled {
-		return pubResult{OK: true, Note: "未开 push（本地分支 " + branch + "）", Link: branch}
+		note := "未开 push（本地分支 " + branch + "）"
+		if ws.userChoosesDeliveryTarget() {
+			note = "已进入共享会话，等待你选择交付到 main、test 或其他目标分支"
+		}
+		return pubResult{OK: true, Note: note, Link: branch}
 	}
-	out, err := git(wt, "push", "-u", "origin", branch, "--force-with-lease")
+	args := []string{"push", "origin", "HEAD:refs/heads/" + branch, "--force-with-lease"}
+	if ws.TrackUpstream {
+		args = []string{"push", "-u", "origin", branch, "--force-with-lease"}
+	}
+	out, err := git(wt, args...)
 	if err != nil {
 		return pubResult{OK: false, Detail: strings.TrimSpace(out)}
 	}
@@ -296,9 +413,16 @@ func afterReview(ws Workspace, wt, branch, title, body string) pubResult {
 		return pubResult{OK: true, Note: "inline 模式：待人工决定提交/合并", Link: branch}
 	}
 	if ws.PushEnabled {
-		if out, err := git(wt, "push", "-u", "origin", branch, "--force-with-lease"); err != nil {
+		args := []string{"push", "origin", "HEAD:refs/heads/" + branch, "--force-with-lease"}
+		if ws.TrackUpstream {
+			args = []string{"push", "-u", "origin", branch, "--force-with-lease"}
+		}
+		if out, err := git(wt, args...); err != nil {
 			return pubResult{OK: false, Detail: strings.TrimSpace(out)}
 		}
+	}
+	if ws.userChoosesDeliveryTarget() {
+		return pubResult{OK: true, Note: "共享会话已完成 Review，等待你选择最终交付分支", Link: branch}
 	}
 	if ws.PREnabled && ws.PRProvider == "github" {
 		args := []string{"pr", "create", "--title", title, "--body", body, "--head", branch, "--base", ws.TargetBranch}

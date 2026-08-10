@@ -191,11 +191,15 @@ Git workspace 默认使用 `work_mode: "inline"`：直接在 `path` 指向的当
   "scm": "git",
   "work_mode": "inline",
   "base": "origin/main",
+  "java_home": "/absolute/path/to/jdk/Contents/Home",
+  "maven_home": "/absolute/path/to/apache-maven-3.8.9",
   "push_enabled": false,
   "pr_enabled": false,
   "test_cmd": ""
 }
 ```
+
+`java_home` 和 `maven_home` 是可选的工作区级工具链配置。配置后，Niuma 会在该仓库及其 worktree 中启动 Agent、LangGraph 验证命令和验收门时注入 `JAVA_HOME`、`MAVEN_HOME`、`M2_HOME`，并把对应的 `bin` 目录放到 `PATH` 最前面。管理页保存时会校验 `bin/java` 和 `bin/mvn` 是否存在且可执行，避免 Agent 再从用户主目录搜索工具。
 
 inline 模式会直接在 `path` 指向的当前工作区、当前分支上开发：
 
@@ -231,6 +235,37 @@ GitLab 工作区示例：
 ```
 
 `worktree_base` 可为该工作区指定独立目录。每个任务会从最新远端基线创建不跟踪主线的本地分支，并检出到该目录下的独立文件夹，适合并发 Agent 使用。`rules_source` 会把来源目录中的 `AGENTS.md` 和 `.claude/rules` 链接到每个新 worktree；这些路径应在目标仓库中保持忽略，避免进入功能提交。
+
+### 共享开发会话
+
+需要把一批任务最终收敛到同一交付分支、又不希望慢 Agent 阻塞整条队列时，可以启用共享开发会话：
+
+```json
+{
+  "path": "/absolute/path/to/repo",
+  "scm": "git",
+  "work_mode": "worktree",
+  "workspace_scope": "session",
+  "queue_mode": "parallel",
+  "session_rollover": "daily",
+  "delivery_target": "user_choose",
+  "track_upstream": false,
+  "worktree_base": "/absolute/path/to/worktree-folders",
+  "base": "origin/main",
+  "push_enabled": false,
+  "pr_enabled": false
+}
+```
+
+该策略在每天第一个任务开始时从最新 `origin/main` 创建一个无 upstream 的 `niuma/session-<workspace>-<date>` 会话分支。每个任务再从会话当时的 HEAD 创建独立临时分支和 worktree，因此 Agent 开发、测试和 Review 可以并行。只有 Review 通过后的 Git 集成动作会串行执行：无冲突时任务分支会 rebase/fast-forward 进入会话分支；冲突时仅当前任务标记为 `integration_conflict`，会话 worktree 保持干净，其他任务不受影响。
+
+- `workspace_scope`: `task`（每任务独立，默认）或 `session`（共享交付分支）。
+- `queue_mode`: `parallel`（任务并行、Git 集成串行）或 `serial`（整个代码阶段按工作区串行）。
+- `session_rollover`: `daily`（每天新会话）或 `manual`（冻结后才创建下一会话）。
+- `delivery_target`: `fixed`（使用 `target_branch`）或 `user_choose`（Niuma 不决定最终目标）。
+- `track_upstream`: 是否在自动 Push 后设置任务/会话分支 upstream；默认 `false`。
+
+管理页会展示会话基线 SHA、任务顺序、提交状态和分支。只有所有任务都已集成且集成 worktree 干净时才能冻结会话；冻结不执行 merge，最终交付到 `main`、`test` 或其他分支仍由用户决定。
 
 ## 本地任务库与可选飞书
 

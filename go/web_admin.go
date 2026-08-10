@@ -59,7 +59,7 @@ func applyPipelineSettings(c *Config, settings pipelineSettings) {
 
 func validatePipelineSettings(settings pipelineSettings) error {
 	if !validBugAgent(settings.BugFixAgent) || !validBugAgent(settings.BugReviewAgent) {
-		return errf("Bug Agent 只能选择 codex 或 cursor")
+		return errf("Bug Agent 只能选择 claude、codex 或 cursor")
 	}
 	if settings.BugFixAgent == settings.BugReviewAgent {
 		return errf("修复 Agent 和 Review Agent 不能相同")
@@ -390,6 +390,32 @@ func (c *bugConsole) handleAdminWorkspaces(w http.ResponseWriter, r *http.Reques
 	default:
 		writeWebError(w, http.StatusMethodNotAllowed, "不支持该操作")
 	}
+}
+
+func (c *bugConsole) handleAdminDevelopmentSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || c.app == nil || c.app.st == nil {
+		writeWebError(w, http.StatusMethodNotAllowed, "不支持该操作")
+		return
+	}
+	writeWebJSON(w, http.StatusOK, map[string]any{"sessions": c.app.st.listDevelopmentSessions(30)})
+}
+
+func (c *bugConsole) handleAdminDevelopmentSession(w http.ResponseWriter, r *http.Request) {
+	if c.app == nil || c.app.st == nil {
+		writeWebError(w, http.StatusServiceUnavailable, "开发会话管理不可用")
+		return
+	}
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/development-sessions/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] != "freeze" || r.Method != http.MethodPost {
+		writeWebError(w, http.StatusMethodNotAllowed, "不支持该操作")
+		return
+	}
+	if err := c.app.freezeDevelopmentSession(parts[0]); err != nil {
+		writeWebError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeWebJSON(w, http.StatusOK, map[string]any{"ok": true, "sessions": c.app.st.listDevelopmentSessions(30)})
 }
 
 func (c *bugConsole) stopBug(w http.ResponseWriter, id string) {

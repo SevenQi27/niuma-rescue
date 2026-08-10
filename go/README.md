@@ -80,7 +80,7 @@ cp ../.env.example ../.env
 | `PIPELINE_TEST_CMD` | 空 | 验收门 shell，exit 0 视为通过；空则不跑 |
 | `PIPELINE_POLL_INTERVAL` | `900` | 兜底轮询秒数（主要靠事件驱动） |
 | `PIPELINE_AGENT_RUNS_KEEP` | `200` | `state/agent-runs/` 保留最近 N 次调用产物 |
-| `PIPELINE_ENGINE_BUG_FIX` / `_BUG_REVIEW` | `codex` / `cursor` | Bug 修复与独立 Review Agent（必须不同） |
+| `PIPELINE_ENGINE_BUG_FIX` / `_BUG_REVIEW` | `claude` / `codex` | Bug 修复与独立 Review Agent（可选 Claude/Codex/Cursor，必须不同） |
 | `PIPELINE_BUG_REPAIR_LIMIT` | `2` | 测试失败或 Review FAIL 后最多返修总轮数 |
 | `PIPELINE_BUG_GRAPH_PYTHON` | 自动发现 `buggraph/.venv` | LangGraph Python 解释器 |
 
@@ -97,7 +97,7 @@ cp ../.env.example ../.env
 - **`状态`（单选）必须包含这些选项**（名字完全一致，少一个会导致写入被飞书拒绝）：
 
   ```
-  待选择 · 待澄清 · 待回答 · 待确认 · 待开发 · 开发中 · Bug处理中 · Review中 · 待合并 · 完成 · 已阻塞
+  待选择 · 待澄清 · 待回答 · 待确认 · 待开发 · 开发中 · Bug处理中 · 等待代码区域 · Review中 · 待合并 · 完成 · 已阻塞
   ```
 
 已有表可先检查再幂等补齐：
@@ -208,9 +208,11 @@ nssm start niuma          :: 重新 build 后用 nssm restart niuma
 Bug 走独立最小链路：
 
 ```text
-飞书发「Bug@codex：<现象>」（或 @cursor）
+飞书发「Bug@claude：<现象>」（也可用 @codex / @cursor）
    └─ 待选择 → 强制创建 BUG worktree
-        └─ 修复 Agent 调查 → 修复 → test_cmd
+        └─ 修复 Agent 调查 → 登记预计修改文件
+             ├─ 与运行中任务重叠 → 等待代码区域
+             └─ 无重叠 → 修复 → test_cmd
              └─ 另一个 Agent 只读 Review
                   ├─ FAIL → 返回修复（最多 2 轮）
                   ├─ NEEDS_INPUT → 待回答
@@ -219,10 +221,13 @@ Bug 走独立最小链路：
 Bug 完成 ──→ 校验目标分支已包含 Bug 提交或等价补丁
 ```
 
-Bug 流水线不会自动建 PR、不会自动合并，也不会使用 inline 工作树。
+Bug 流水线不会自动建 PR、不会自动合并，也不会使用 inline 工作树。普通 `task` 策略下每个 Bug 使用独立交付分支；`session` 策略下每个 Bug 仍在独立临时 worktree 中执行，但 Review 通过后会串行进入共享会话分支。
+
+相似 Bug 会在页面提示；调查命中相同文件时，后来的任务保留调查结果并暂停写代码。前置任务 Review 通过后，后续任务分支会自动接到前置分支上继续，页面展示人工合并顺序。
 
 - **inline**（默认）：所有需求在 `PIPELINE_REPO_PATH` 的**当前工作树**上改动，不自动提交，由人决定。
 - 想每条需求隔离独立目录/分支、自动 push/PR/MR：在 `workspaces.json` 用 `work_mode: "worktree"`，并可用 `worktree_base` 指定这些目录的统一位置；新分支从最新远端基线创建且不跟踪主线。若规则未提交到主线，可用 `rules_source` 把来源仓库的 `AGENTS.md` 和 `.claude/rules` 链接到每个目录。
+- 想每天从最新主线创建一个统一交付分支，同时避免慢 Agent 阻塞：增加 `workspace_scope: "session"`、`queue_mode: "parallel"`、`session_rollover: "daily"`。任务 worktree 并行执行，只有 Review 后进入会话分支的 Git 动作串行。
 - 同一 inline 工作区内开发/Review 串行（共享一棵树）；澄清并行；不同工作区整体并行。
 
 ---
@@ -232,7 +237,7 @@ Bug 流水线不会自动建 PR、不会自动合并，也不会使用 inline �
 | 命令 | 作用 |
 |---|---|
 | `需求：<描述>` | 提一个新需求进需求池 |
-| `Bug@codex：<现象>` / `Bug@cursor：<现象>` | 提交 Bug；指定修复 Agent，另一个自动 Review |
+| `Bug@claude：<现象>` / `Bug@codex：<现象>` / `Bug@cursor：<现象>` | 提交 Bug；指定修复 Agent，系统自动选择不同的 Review Agent |
 | `需求池` / `池子` | 列出待选择需求（可勾选确认） |
 | `开始开发` | 把「待开发」队列整批开跑 |
 | `看板` / `状态` / `配置` / `诊断` | 查看在途需求 / 当前需求 / 选 Agent 工作区 / 单条诊断 |

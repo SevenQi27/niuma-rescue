@@ -13,7 +13,10 @@ class ProtocolBridge:
     def __init__(self, runner: str) -> None:
         self.runner = runner
 
-    def run(self, *, engine: str, cwd: str, prompt: str, timeout: int) -> AgentReply:
+    def run(
+        self, *, engine: str, cwd: str, prompt: str, timeout: int,
+        session_id: str = "", write_access: bool = False,
+    ) -> AgentReply:
         if "Bug 调查 Agent" in prompt:
             return AgentReply(True, "DIAGNOSED\nroot cause")
         if "Bug 修复 Agent" in prompt:
