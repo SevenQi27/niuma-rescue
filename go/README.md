@@ -20,6 +20,25 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 
 ![任务中心](../docs/images/niuma-task-center.png)
 
+### 需求流程（Go 原生）
+
+需求流程不依赖 Python BugGraph，并且不会从一段模糊描述直接跳到改代码：
+
+1. 录入目标、使用场景、范围、验收预期和附件，同时分别选择澄清、开发、Review Agent 与代码工作区；
+2. 人工点击开始后进入 AI 澄清；信息不足时停在「待回答」，信息充分时生成 PRD 与验收标准并停在「待确认」；
+3. 人工可以补充澄清记录、修改 PRD，再确认进入「待开发」队列；确认动作本身不会自动启动开发；
+4. 人工选择合适时机开始开发；inline 工作区可合批处理，同一任务也可以使用独立 worktree 或共享开发会话，并按工作区配置执行测试门；
+5. 开发完成后可发起独立 Review，也可由人工直接验收；最终停在人工交付卡点，由用户决定提交、Push、PR 和目标分支合并。
+
+页面会持续展示 PRD、澄清记录、阶段进度、Agent 输出与交付链接。典型状态流为：
+
+```text
+待选择 → 待澄清 → 待确认 → 待开发 → 开发中 → Review中 → 待合并 → 完成
+            └→ 待回答 → 待澄清                  └────→ 待合并（inline 可选 Review）
+```
+
+![需求中心](../docs/images/niuma-requirement-center.png)
+
 ![管理控制台](../docs/images/niuma-management-console.png)
 
 页面和 API 按当前部署要求不设登录。连接器密钥只保存在服务端，管理 API 不回传明文；飞书设置位于 `state/integration.json`，其他连接器位于权限为 `0600` 的 `state/integrations.json`，均不进入 Git。此入口使用普通 HTTP，只适合可信局域网，不应直接暴露公网。`NIUMA_WEB_ENABLED=0` 可完全关闭。

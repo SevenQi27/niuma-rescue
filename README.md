@@ -33,6 +33,31 @@ the agent pipeline.
 - **Optional integrations** — Feishu sync and cards, plus ZenTao/Jira/Slack
   connection management and validated event ingestion.
 
+## Requirement workflow
+
+Requirements use a Go-native workflow and do not need the Python BugGraph
+sidecar:
+
+1. **Intake and routing** — capture the goal, scope, acceptance expectations and
+   attachments; choose the workspace plus clarification, development and Review
+   agents.
+2. **AI clarification** — the clarification agent either asks for missing
+   information or generates a concise PRD with scope and acceptance criteria.
+3. **Human confirmation** — the requester can inspect and edit the clarification
+   record and PRD. Confirmation only moves the task into the development queue;
+   it does not start coding automatically.
+4. **Controlled development** — a human starts development when the queue is
+   ready. Inline workspaces can batch compatible requirements, while worktree
+   strategies keep task changes isolated and run the configured test gate.
+5. **Review and delivery** — changes can go through an independent Review agent
+   or an explicit human acceptance path. Niuma then stops at the delivery gate
+   and leaves the final branch merge to the user.
+
+The task detail exposes the generated PRD, clarification history, live stage
+progress, agent output and delivery link throughout the workflow.
+
+![Niuma requirement center](docs/images/niuma-requirement-center.png)
+
 ![Niuma management console](docs/images/niuma-management-console.png)
 
 ## Architecture
