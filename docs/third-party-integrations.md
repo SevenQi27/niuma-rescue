@@ -2,7 +2,7 @@
 
 Niuma 的本地 SQLite 和 Go 状态机始终是任务主控。飞书、禅道、Jira 和 Slack 只作为任务入口、外部工作项绑定或通知渠道；停用任意连接器不会删除本地任务，也不会停止 Agent 流水线。
 
-![第三方集成管理](images/niuma-management-console.jpg)
+![第三方集成管理](images/niuma-management-console.png)
 
 ## 当前 MVP
 

@@ -18,9 +18,9 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 - 在需求页签完成录入、AI 澄清、人工确认、开始开发、独立 Review 和人工合并，并查看 PRD 与阶段进度。
 - 打开 `/manage` 管理任务停止/重试/完成/归档、飞书/禅道/Jira/Slack 连接、默认 Agent 和工作区。
 
-![任务中心](../docs/images/niuma-task-center.jpg)
+![任务中心](../docs/images/niuma-task-center.png)
 
-![管理控制台](../docs/images/niuma-management-console.jpg)
+![管理控制台](../docs/images/niuma-management-console.png)
 
 页面和 API 按当前部署要求不设登录。连接器密钥只保存在服务端，管理 API 不回传明文；飞书设置位于 `state/integration.json`，其他连接器位于权限为 `0600` 的 `state/integrations.json`，均不进入 Git。此入口使用普通 HTTP，只适合可信局域网，不应直接暴露公网。`NIUMA_WEB_ENABLED=0` 可完全关闭。
 

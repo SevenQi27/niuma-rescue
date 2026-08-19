@@ -9,7 +9,7 @@ The browser task center is the default entry point. Feishu, ZenTao, Jira and
 Slack are optional connectors; disabling one of them does not stop local tasks or
 the agent pipeline.
 
-![Niuma task center](docs/images/niuma-task-center.jpg)
+![Niuma task center](docs/images/niuma-task-center.png)
 
 ## What it does
 
@@ -33,7 +33,7 @@ the agent pipeline.
 - **Optional integrations** — Feishu sync and cards, plus ZenTao/Jira/Slack
   connection management and validated event ingestion.
 
-![Niuma management console](docs/images/niuma-management-console.jpg)
+![Niuma management console](docs/images/niuma-management-console.png)
 
 ## Architecture
 
