@@ -1,10 +1,10 @@
 # Windows 安装与运行（Go 版）
 
-niuma 是单个 `niuma.exe`，无运行时依赖。下面是 Windows 上从构建到后台常驻的完整说明。
+Niuma 的 Go 控制面是单个 `niuma.exe`。普通需求和 Web 管理不需要 Python；Bug 调查/修复流程仍需部署 `buggraph/`、Python 3.10+ 和虚拟环境。
 
 ## 1. 构建
 
-需要 Go 1.25+：
+需要 Go 1.25.5+：
 
 ```cmd
 cd agent-pipeline\go
@@ -19,16 +19,24 @@ go build -o niuma.exe .
 
 ## 2. 配置 `.env`
 
-放在仓库根（`go\` 的上一层），见 [`.env.example`](../.env.example)。填飞书凭据、Base 的
-`PIPELINE_BASE_TOKEN` / `PIPELINE_TABLE_ID`、目标仓库路径（Windows 路径，如
-`PIPELINE_REPO_PATH=C:\Users\you\repo`）。飞书 Base 字段与「状态」单选选项见
-[feishu-app-setup.md](feishu-app-setup.md)。
+放在仓库根（`go\` 的上一层），见 [`.env.example`](../.env.example)。纯本地模式只需配置目标仓库路径（例如 `PIPELINE_REPO_PATH=C:\Users\you\repo`），或提供有效的 `workspaces.json`。飞书凭据和 Base 标识都是可选项；字段和状态配置见 [feishu-app-setup.md](feishu-app-setup.md)。
 
 前台验证一下：
 
 ```cmd
 cd agent-pipeline\go
 niuma.exe
+```
+
+打开 `http://localhost:8787` 检查任务中心和管理控制台。当前页面无鉴权，只能用于可信局域网。
+
+如果要运行 Bug 流程，在仓库根执行：
+
+```cmd
+cd buggraph
+py -3.10 -m venv .venv
+.venv\Scripts\python.exe -m pip install -e .
+.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 ## 3. 后台常驻（避免桌面一直挂一个 cmd 黑窗）

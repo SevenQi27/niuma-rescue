@@ -1,244 +1,163 @@
-# 配置说明
+# 配置参考
 
-配置采用分层文件，默认值可直接跑，迁移到别人机器时按需复制 example 文件：
+当前版本读取根目录 `.env`、可选的 `workspaces.json`，以及管理控制台写入 `state/` 的运行时配置。不存在旧版 `fields.json`、`agents.json` 或 Python 禅道同步脚本配置。
 
-- `.env`：飞书凭据、Base token、默认仓库、运行策略等部署值。
-- `fields.json`：飞书 Base 字段名映射，默认读取内置字段名。
-- `workspaces.json`：代码工作区、Git/GitLab/SVN 配置。
-- `agents.json`：默认 agent、CLI 命令模板、别名。
-- `zentao.json`：禅道 Bug 导入配置。
+## 配置加载顺序
 
-`.env` 可从 `.env.example` 复制；其他配置可从 `*.example.json` 复制。
+Niuma 按顺序查找：
 
-## 必填项
+1. `NIUMA_ENV` 指定的文件；
+2. 当前目录 `.env`；
+3. `../.env`；
+4. `../../.env`。
 
-```text
-FEISHU_APP_ID
-FEISHU_APP_SECRET
-PIPELINE_BASE_TOKEN
-PIPELINE_TABLE_ID
-PIPELINE_REPO_PATH
-```
+已经存在的进程环境变量优先于 `.env`。找到 `.env` 后，其所在目录会成为默认的 `state/`、`worktrees/` 和 `workspaces.json` 根目录。
 
-`PIPELINE_BASE_TOKEN` 和 `PIPELINE_TABLE_ID` 可以由 `bootstrap.py` 自动写入。
+## 最小配置
 
-## 代码仓库
+只使用一个仓库：
 
 ```text
-PIPELINE_REPO_PATH=/abs/path/to/repo
+PIPELINE_REPO_PATH=/absolute/path/to/repo
+NIUMA_FEISHU_ENABLED=0
 ```
 
-默认 Git 工作区要求：
+使用多个工作区时，可以不设置 `PIPELINE_REPO_PATH`，但 `PIPELINE_WORKSPACES_FILE` 指向的 JSON 至少要包含一个有效工作区。
 
-- 是 git 仓库
-- 有 `origin/main`
-- 当前机器能创建 git worktree
+## Web 与本地状态
 
-如果主要使用 `workspaces.json` 指定 GitLab/SVN 工作区，`PIPELINE_REPO_PATH` 可以作为默认兜底仓库；实际需求会优先走 `工作区` 字段。
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `NIUMA_WEB_ENABLED` | `1` | 是否启用任务中心和管理控制台 |
+| `NIUMA_WEB_ADDR` | `:8787` | HTTP 监听地址 |
+| `PIPELINE_STATE_DIR` | `<root>/state` | SQLite、连接器设置、附件和 Agent 产物目录 |
+| `PIPELINE_WORKTREE_BASE` | `<root>/worktrees` | 未被工作区覆盖时的 worktree 根目录 |
+| `PIPELINE_WORKSPACES_FILE` | `<root>/workspaces.json` | 多工作区配置 |
+| `PIPELINE_AGENT_RUNS_KEEP` | `200` | 保留最近 Agent 调用产物数量 |
 
-## 工作区
+Web 当前无鉴权，不能直接暴露公网。
 
-每条需求可以指定目标工作区。飞书消息示例：
+## Agent 与超时
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PIPELINE_ENGINE_CLARIFY` | `cursor` | 需求澄清 Agent |
+| `PIPELINE_ENGINE_CODE` | `cursor` | 需求开发 Agent |
+| `PIPELINE_ENGINE_REVIEW` | `gemini` | 需求 Review Agent |
+| `PIPELINE_ENGINE_BUG_FIX` | `claude` | Bug 修复 Agent |
+| `PIPELINE_ENGINE_BUG_REVIEW` | `codex` | Bug 独立 Review Agent |
+| `PIPELINE_TIMEOUT_CLARIFY` | `600` | 澄清超时秒数 |
+| `PIPELINE_TIMEOUT_CODE` | `1800` | 开发/测试命令超时秒数 |
+| `PIPELINE_TIMEOUT_REVIEW` | `900` | Review 超时秒数 |
+| `PIPELINE_TIMEOUT_BUG` | `10800` | 完整 BugGraph 超时秒数 |
+| `PIPELINE_BUG_REPAIR_LIMIT` | `2` | 测试或 Review 失败后的最大返修轮数 |
+| `PIPELINE_AGENT_RETRIES` | `2` | 单次 Agent 调用重试次数 |
+| `PIPELINE_INACTIVITY_TIMEOUT` | `120` | 无输出看门狗；`0` 关闭 |
+
+Bug Agent 仅支持 Claude、Codex、Cursor，且修复与 Review 不能相同。管理控制台保存的覆盖值在重启后继续生效。
+
+## 调度与重试
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PIPELINE_MAX_CONCURRENCY` | `2` | 全局并发 Agent 上限 |
+| `PIPELINE_POLL_INTERVAL` | `900` | 事件驱动之外的兜底扫描间隔 |
+| `PIPELINE_EXECUTION_STALE_AFTER` | `600` | 执行锁多久无心跳后可被接管 |
+| `PIPELINE_RETRY_BASE_DELAY` | `60` | 指数退避基数秒数 |
+| `PIPELINE_FAILURE_LIMIT` | `2` | 达到后进入“已阻塞” |
+| `PIPELINE_SETUP_GATE` | `1` | 新任务是否先停在“待选择” |
+| `PIPELINE_BATCH_CLARIFY` | `1` | 是否并行澄清多条需求 |
+| `PIPELINE_BATCH_DEVELOP` | `1` | inline 模式是否合批开发 |
+| `PIPELINE_INLINE_SKIP_GATE` | `1` | inline 开发是否跳过自动测试门 |
+
+## BugGraph
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PIPELINE_BUG_GRAPH_PYTHON` | 自动发现 `buggraph/.venv` | Python 解释器 |
+| `PIPELINE_BUG_GRAPH_DIR` | `<root>/buggraph` | Python 包目录 |
+| `PIPELINE_CODE_EXTS` | 内置代码扩展名列表 | 判断是否为产品代码改动 |
+
+BugGraph 会读取工作区 `test_cmd`。当前实现中，空命令会记录 `SKIPPED` 并继续流程；这不等于真实验收通过。生产代码工作区应配置可重复执行的测试命令。
+
+## 飞书（可选）
 
 ```text
-需求 #frontend-app：修改 README
-需求 #backend-service：调整面试通知推送方式
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+PIPELINE_BASE_TOKEN=app_xxx
+PIPELINE_TABLE_ID=tblxxx
+NIUMA_FEISHU_ENABLED=1
 ```
 
-本机路径维护在 `workspaces.json`，交付包提供 `workspaces.example.json`。查看当前配置：
+四项齐全且未显式设置 `NIUMA_FEISHU_ENABLED` 时，Niuma 会自动启用飞书；否则保持纯本地模式。也可以在管理控制台保存、测试、启停和立即同步。
+
+飞书字段与状态选项见 [feishu-app-setup.md](feishu-app-setup.md)。
+
+## 工作区配置
+
+从样例开始：
 
 ```bash
-python3 -B src/pipelinectl.py workspaces
+cp workspaces.example.json workspaces.json
 ```
 
-优先级：Base 记录 `工作区` > 消息 `#workspace` 写入的字段 > `workspaces.json.default` > `PIPELINE_REPO_PATH`。
+基础字段：
 
-## 飞书字段映射
+| 字段 | 值 | 说明 |
+| --- | --- | --- |
+| `path` | 绝对路径 | 仓库或 SVN 工作副本 |
+| `scm` | `git` / `svn` | 版本控制类型 |
+| `work_mode` | `inline` / `worktree` | 当前目录或隔离目录 |
+| `base` | 如 `origin/main` | 新任务和会话的配置基线 |
+| `target_branch` | 如 `main` | `delivery_target=fixed` 时的目标 |
+| `worktree_base` | 绝对路径 | 工作区专属 worktree 根目录 |
+| `rules_source` | 绝对路径 | 链接 `AGENTS.md` / `.claude/rules` 的来源 checkout |
+| `test_cmd` | shell 命令 | 验收门；空值表示跳过 |
+| `java_home` | JDK 根目录 | 注入 `JAVA_HOME` 和 `PATH` |
+| `maven_home` | Maven 根目录 | 注入 `MAVEN_HOME`、`M2_HOME` 和 `PATH` |
+| `push_enabled` | boolean | 是否允许自动 push |
+| `pr_enabled` | boolean | 是否允许自动创建 PR/MR |
+| `pr_provider` | `none` / `github` / `gitlab` | PR 提供方 |
+| `gh_repo` | `owner/repo` | GitHub 目标仓库 |
 
-默认字段名与 `bootstrap.py` 创建的 Base 保持一致。如果你接入的是已有 Base，字段名不完全一样，复制一份：
-
-```bash
-cp fields.example.json fields.json
-```
-
-然后按你的 Base 列名修改右侧值：
+### Inline
 
 ```json
 {
-  "title": "需求标题",
-  "status": "状态",
-  "description": "需求描述",
-  "clarify": "澄清记录",
-  "prd": "PRD",
-  "link": "分支PR链接",
-  "log": "执行日志",
-  "fails": "失败次数",
-  "owner": "提需求人",
-  "chat": "会话ID",
-  "workspace": "工作区",
-  "agent": "执行Agent",
-  "agent_clarify": "澄清Agent",
-  "agent_code": "开发Agent",
-  "agent_review": "ReviewAgent",
-  "external_source": "来源系统",
-  "external_id": "外部ID",
-  "external_url": "外部链接",
-  "external_type": "外部类型",
-  "sync_status": "同步状态"
-}
-```
-
-也可以通过 `.env` 指定路径：
-
-```text
-PIPELINE_FIELDS_FILE=/abs/path/to/fields.json
-```
-
-字段左侧 key 是流水线内部语义，不要改；右侧 value 是飞书 Base 里的真实列名。
-
-外部来源字段是可选字段，用于禅道等外部系统同步。旧 Base 没有这些列时，禅道导入器会把来源标记写进需求描述继续工作；新建 Base 会由 `bootstrap.py` 自动创建这些字段。
-
-## 禅道 Bug 导入
-
-复制配置样例：
-
-```bash
-cp zentao.example.json zentao.json
-```
-
-最小配置：
-
-```json
-{
-  "base_url": "https://chandao.yeecoh.com:11180",
-  "bug_endpoint": "/api.php/v1/bugs",
-  "token_endpoint": "/api.php/v1/tokens",
-  "bug_query": {
-    "status": "active",
-    "limit": 50
-  },
-  "token": "",
-  "token_env": "ZENTAO_TOKEN",
-  "token_header": "Token",
-  "account": "",
-  "account_env": "ZENTAO_ACCOUNT",
-  "password": "",
-  "password_env": "ZENTAO_PASSWORD",
-  "verify_ssl": true,
-  "workspace": "backend-service",
-  "agent": "",
-  "dry_run": true
-}
-```
-
-禅道企业版 12.4 常见接法是：
-
-- `POST /api.php/v1/tokens`，body 为 `{"account": "...", "password": "..."}`，拿 token。
-- `GET /api.php/v1/bugs`，请求头带 `Token: <token>`，拉 Bug。
-
-如果不想把账号密码写进 `zentao.json`，可以放到本机环境变量：
-
-```bash
-export ZENTAO_BASE_URL=https://chandao.yeecoh.com:11180
-export ZENTAO_ACCOUNT=your-account
-export ZENTAO_PASSWORD=your-password
-```
-
-如果内网禅道使用自签或不完整证书链，Python 可能报 `CERTIFICATE_VERIFY_FAILED`。推荐先安装/信任正确 CA；临时验证时可在本机 `zentao.json` 设置 `"verify_ssl": false`。
-
-先预览：
-
-```bash
-python3 -B src/sync_zentao.py pull --dry-run
-```
-
-确认后导入：
-
-```bash
-python3 -B src/sync_zentao.py pull
-```
-
-同步器会把 Bug 写成 `待选择`，由飞书卡片继续选择 Agent / 工作区并进入后续流水线。
-
-也可以直接在飞书里发：
-
-```text
-预览禅道 3
-同步禅道 3
-```
-
-`预览禅道` 只回显标题，不写 Base；`同步禅道` 会真实导入。数字参数可省略，省略时使用 `zentao.json` 里的 `bug_query.limit`。
-
-## 发布 / Review
-
-```text
-PIPELINE_PUSH_ENABLED=0
-PIPELINE_PR_ENABLED=0
-PIPELINE_GH_REPO=org/repo
-```
-
-`PIPELINE_PUSH_ENABLED` 控制开发完成后是否自动发布变更；`PIPELINE_PR_ENABLED` 控制 Review 通过后是否自动创建 GitHub PR / GitLab MR。默认关闭时，流水线会把变更保留在本地分支或 SVN 工作副本并推进到 `待合并`。
-
-### Git 工作区模式
-
-Git workspace 默认使用 `work_mode: "inline"`：直接在 `path` 指向的当前工作区、当前分支上开发，适合“Agent 改代码，人来决定何时提交”的本地协作方式。
-
-默认推荐配置：
-
-```json
-{
-  "path": "/absolute/path/to/large/repo",
+  "path": "/absolute/path/to/repo",
   "scm": "git",
   "work_mode": "inline",
   "base": "origin/main",
-  "java_home": "/absolute/path/to/jdk/Contents/Home",
-  "maven_home": "/absolute/path/to/apache-maven-3.8.9",
   "push_enabled": false,
   "pr_enabled": false,
   "test_cmd": ""
 }
 ```
 
-`java_home` 和 `maven_home` 是可选的工作区级工具链配置。配置后，Niuma 会在该仓库及其 worktree 中启动 Agent、LangGraph 验证命令和验收门时注入 `JAVA_HOME`、`MAVEN_HOME`、`M2_HOME`，并把对应的 `bin` 目录放到 `PATH` 最前面。管理页保存时会校验 `bin/java` 和 `bin/mvn` 是否存在且可执行，避免 Agent 再从用户主目录搜索工具。
+直接修改当前 checkout，不创建分支、不提交、不 push。同一工作区代码阶段串行。原工作区已有脏文件会进入 diff 范围，因此开始前应保持干净。
 
-inline 模式会直接在 `path` 指向的当前工作区、当前分支上开发：
-
-- 不创建 git worktree
-- 不创建或切换分支
-- 不 commit
-- 不 push
-- 不创建 PR/MR
-
-Review 通过后，状态仍会进入 `待合并`，但实际含义是“改动已留在当前工作区，等待人工检查、提交或丢弃”。
-
-注意：inline 模式的 diff / Review 基于当前工作区未提交改动。若目标仓库原本就有脏文件，它们也会进入改动列表；建议在开始需求前保持工作区干净，或先把无关改动 stash / commit / 移出。
-
-如果你希望每条需求隔离到独立目录、独立分支，再由系统自动 push / PR / MR，可以显式使用 `work_mode: "worktree"`：
-
-GitLab 工作区示例：
+### 每任务独立 worktree
 
 ```json
 {
-  "path": "/absolute/path/to/gitlab/repo",
+  "path": "/absolute/path/to/repo",
   "scm": "git",
   "work_mode": "worktree",
-  "worktree_base": "/absolute/path/to/worktree-folders",
-  "rules_source": "/absolute/path/to/source-checkout",
+  "workspace_scope": "task",
+  "queue_mode": "parallel",
+  "worktree_base": "/absolute/path/to/worktrees",
   "base": "origin/main",
   "target_branch": "main",
-  "push_enabled": true,
-  "pr_enabled": true,
-  "pr_provider": "gitlab",
-  "gitlab_repo": "group/project",
-  "test_cmd": "npm test"
+  "push_enabled": false,
+  "pr_enabled": false,
+  "test_cmd": "mvn test"
 }
 ```
 
-`worktree_base` 可为该工作区指定独立目录。每个任务会从最新远端基线创建不跟踪主线的本地分支，并检出到该目录下的独立文件夹，适合并发 Agent 使用。`rules_source` 会把来源目录中的 `AGENTS.md` 和 `.claude/rules` 链接到每个新 worktree；这些路径应在目标仓库中保持忽略，避免进入功能提交。
+每条任务从配置基线创建无 upstream 的独立分支。任务之间可以并行，最终交付各自处理。
 
 ### 共享开发会话
-
-需要把一批任务最终收敛到同一交付分支、又不希望慢 Agent 阻塞整条队列时，可以启用共享开发会话：
 
 ```json
 {
@@ -250,116 +169,32 @@ GitLab 工作区示例：
   "session_rollover": "daily",
   "delivery_target": "user_choose",
   "track_upstream": false,
-  "worktree_base": "/absolute/path/to/worktree-folders",
+  "worktree_base": "/absolute/path/to/worktrees",
   "base": "origin/main",
   "push_enabled": false,
-  "pr_enabled": false
+  "pr_enabled": false,
+  "test_cmd": "mvn test"
 }
 ```
 
-该策略在每天第一个任务开始时从最新 `origin/main` 创建一个无 upstream 的 `niuma/session-<workspace>-<date>` 会话分支。每个任务再从会话当时的 HEAD 创建独立临时分支和 worktree，因此 Agent 开发、测试和 Review 可以并行。只有 Review 通过后的 Git 集成动作会串行执行：无冲突时任务分支会 rebase/fast-forward 进入会话分支；冲突时仅当前任务标记为 `integration_conflict`，会话 worktree 保持干净，其他任务不受影响。
+共享会话字段：
 
-- `workspace_scope`: `task`（每任务独立，默认）或 `session`（共享交付分支）。
-- `queue_mode`: `parallel`（任务并行、Git 集成串行）或 `serial`（整个代码阶段按工作区串行）。
-- `session_rollover`: `daily`（每天新会话）或 `manual`（冻结后才创建下一会话）。
-- `delivery_target`: `fixed`（使用 `target_branch`）或 `user_choose`（Niuma 不决定最终目标）。
-- `track_upstream`: 是否在自动 Push 后设置任务/会话分支 upstream；默认 `false`。
+- `workspace_scope`: `task`（默认）或 `session`；
+- `queue_mode`: `parallel`（Agent 并行、Git 集成串行）或 `serial`；
+- `session_rollover`: `daily`（按日期分会话）或 `manual`（冻结后再创建）；
+- `delivery_target`: `fixed` 或 `user_choose`；
+- `track_upstream`: push 后是否设置 Niuma 分支的 upstream，默认 `false`。
 
-管理页会展示会话基线 SHA、任务顺序、提交状态和分支。只有所有任务都已集成且集成 worktree 干净时才能冻结会话；冻结不执行 merge，最终交付到 `main`、`test` 或其他分支仍由用户决定。
+创建会话时会解析并更新配置基线，然后基于该 SHA 创建无 upstream 的会话分支。每个任务从会话当时 HEAD 创建临时 worktree；Review 通过后才串行 rebase/fast-forward 到会话分支。冲突只暂停当前任务，最终合并目标仍由用户决定。
 
-## 本地任务库与可选飞书
+`session` 仅支持 Git + `worktree`，不能与 inline 或 SVN 组合。
 
-任务始终保存在 `PIPELINE_STATE_DIR/niuma.sqlite3`。`NIUMA_FEISHU_ENABLED=0` 可强制使用纯本地模式；若未设置该变量，则只有在 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`PIPELINE_BASE_TOKEN`、`PIPELINE_TABLE_ID` 四项齐全时才自动启用飞书。
+## Push 和 PR
 
-浏览器访问 `/manage` 可以运行时启停飞书、测试连接和立即同步。非密钥设置与 App Secret 保存在 Git 忽略的 `state/integration.json`，接口只返回脱敏值。关闭飞书不会删除本地记录；重新启用后会推送待同步任务并导入 Base 中尚未存在于本地的记录。
+全局 `PIPELINE_PUSH_ENABLED` / `PIPELINE_PR_ENABLED` 仅用于没有工作区文件时的默认工作区。存在 `workspaces.json` 时，以每个工作区的 `push_enabled`、`pr_enabled` 为准。
 
-当前管理控制台没有身份认证，只能部署在可信局域网，禁止直接暴露到公网。
+默认建议关闭自动 push/PR，先验证本地分支、测试和 Review。GitHub 需要已登录 `gh`；GitLab 需要已登录 `glab`。
 
-要求本机已安装并登录 `glab`。如果 `gitlab_repo` 留空，`glab` 会从当前 git remote 推断项目。
+## 第三方连接器
 
-SVN 工作区示例：
-
-```json
-{
-  "path": "/absolute/path/to/local/svn-checkout-or-placeholder",
-  "scm": "svn",
-  "base": "https://svn.example.com/repos/project/trunk",
-  "push_enabled": false,
-  "test_cmd": "pytest -q"
-}
-```
-
-SVN 模式会按需求 checkout 独立工作副本。`push_enabled=false` 时 Review 通过后只进入 `待合并`，不提交；改为 `true` 后会在 Review 通过后执行 `svn add/delete/commit`。建议先在测试 SVN 仓库验证。
-
-## 验收门
-
-```text
-PIPELINE_TEST_CMD=npm test
-```
-
-在需求 worktree 里执行，退出码为 0 才算通过。留空则不跑验收门。
-
-`PIPELINE_CODE_EXTS` 控制哪些扩展名被视为代码改动。纯文档改动会跳过验收门。
-
-## Agent
-
-```text
-PIPELINE_ENGINE_CLARIFY=cursor
-PIPELINE_ENGINE_CODE=cursor
-PIPELINE_ENGINE_REVIEW=gemini
-```
-
-飞书里可以用 `需求@cursor：xxx` 覆盖澄清阶段 agent。表格字段 `执行Agent` 可作为记录级默认值，`澄清Agent/开发Agent/ReviewAgent` 可分别覆盖阶段。
-
-默认 agent 和 CLI 命令也可以集中放到 `agents.json`：
-
-```bash
-cp agents.example.json agents.json
-```
-
-示例：
-
-```json
-{
-  "defaults": {
-    "clarify": "claude",
-    "code": "cursor",
-    "review": "gemini"
-  },
-  "commands": {
-    "cursor": ["cursor-agent", "--print", "--force", "--trust", "--output-format", "text"]
-  },
-  "aliases": {
-    "Cursor Agent": "cursor"
-  }
-}
-```
-
-优先级：`.env` 里的 `PIPELINE_ENGINE_*` > `agents.json.defaults` > 内置默认。
-命令模板优先级：`agents.json.commands` 覆盖内置 `AGENT_CMDS`。
-别名优先级：`agents.json.aliases` 覆盖/补充内置别名。
-
-## 轮询
-
-```text
-PIPELINE_POLL_INTERVAL=900
-```
-
-事件驱动为主，轮询只做兜底。测试时可临时调小。
-
-## 执行锁与重试
-
-```text
-PIPELINE_EXECUTION_STALE_AFTER=7800
-PIPELINE_RETRY_BASE_DELAY=60
-PIPELINE_FAILURE_LIMIT=2
-```
-
-dispatcher 会把记录级执行锁、run_id、失败原因和下次重试时间写入本地 `state/runs.sqlite3`。`PIPELINE_EXECUTION_STALE_AFTER` 控制 processing 锁多久算过期；`PIPELINE_RETRY_BASE_DELAY` 控制失败后退避重试的基数；`PIPELINE_FAILURE_LIMIT` 达到上限后把需求推进到 `已阻塞`。
-
-查看本地执行状态：
-
-```bash
-python3 -B src/pipelinectl.py runs
-python3 -B src/pipelinectl.py run-events
-```
+禅道、Jira、Slack 当前通过管理控制台配置，保存在 `state/integrations.json`。能力和 Webhook 入口见 [third-party-integrations.md](third-party-integrations.md)。
