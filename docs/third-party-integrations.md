@@ -2,6 +2,8 @@
 
 Niuma 的本地 SQLite 和 Go 状态机始终是任务主控。飞书、禅道、Jira 和 Slack 只作为任务入口、外部工作项绑定或通知渠道；停用任意连接器不会删除本地任务，也不会停止 Agent 流水线。
 
+![第三方集成管理](images/niuma-management-console.png)
+
 ## 当前 MVP
 
 | 平台 | 当前能力 | 下一阶段 |
@@ -24,6 +26,8 @@ Niuma 的本地 SQLite 和 Go 状态机始终是任务主控。飞书、禅道�
 5. 将页面显示的事件入口配置到第三方平台。
 
 管理 API 不返回已保存的 Token，只返回 `has_*` 标志。密码框留空表示保留原密钥。配置保存在 `state/integrations.json`，文件权限为 `0600`。
+
+管理控制台当前没有身份认证，不得把它或 Webhook Token 暴露到不可信网络。Webhook Secret 应使用独立随机值，不要复用平台登录密码或 API Token。
 
 ## Webhook 入口
 
@@ -59,3 +63,10 @@ POST /api/integrations/slack/events
 - `integration_events`：原始第三方事件、幂等键、状态和重试信息；
 - `external_bindings`：本地任务与多个第三方对象之间的绑定，为后续双向同步预留；
 - `local_records`：仍然是 Bug/需求主数据，不因第三方连接器改变。
+
+## 当前边界
+
+- 禅道/Jira Webhook 成功只表示事件已验签、去重并落库，不表示任务已创建或 Agent 已启动；
+- 外部事件载荷可能包含业务敏感信息，应限制 `state/` 目录访问并纳入备份策略；
+- 飞书是当前唯一具备任务同步和消息交互完整链路的连接器；
+- 连接器失败不会回滚本地任务状态，恢复后需要在管理页重新测试并按需同步。

@@ -9,7 +9,7 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 
 服务默认同时监听 `:8787`，局域网用户访问 `http://<这台机器的局域网 IP>:8787` 后，可以在 `Bug / 需求` 两个页签中分别录入和管理任务：
 
-- 新建 Bug，选择代码工作区和 Codex/Cursor 修复 Agent；
+- 新建 Bug，选择代码工作区和 Claude/Codex/Cursor 修复 Agent；
 - 上传图片、PDF、Excel 或 CSV 附件；图片可预览、文档可打开或下载，Agent 会在 Bug 档案中读取附件；
 - 在「待选择 / 待回答 / 已阻塞」阶段修改描述和补充信息；
 - 确认后启动既有的 worktree → 修复 → 测试 → 独立 Review → 人工合并路线；
@@ -17,6 +17,29 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 - 在 Bug 卡片内展开 AI 执行过程，实时查看各阶段状态及 Agent 调查、修复、验证和 Review 结果。
 - 在需求页签完成录入、AI 澄清、人工确认、开始开发、独立 Review 和人工合并，并查看 PRD 与阶段进度。
 - 打开 `/manage` 管理任务停止/重试/完成/归档、飞书/禅道/Jira/Slack 连接、默认 Agent 和工作区。
+
+![任务中心](../docs/images/niuma-task-center.png)
+
+### 需求流程（Go 原生）
+
+需求流程不依赖 Python BugGraph，并且不会从一段模糊描述直接跳到改代码：
+
+1. 录入目标、使用场景、范围、验收预期和附件，同时分别选择澄清、开发、Review Agent 与代码工作区；
+2. 人工点击开始后进入 AI 澄清；信息不足时停在「待回答」，信息充分时生成 PRD 与验收标准并停在「待确认」；
+3. 人工可以补充澄清记录、修改 PRD，再确认进入「待开发」队列；确认动作本身不会自动启动开发；
+4. 人工选择合适时机开始开发；inline 工作区可合批处理，同一任务也可以使用独立 worktree 或共享开发会话，并按工作区配置执行测试门；
+5. 开发完成后可发起独立 Review，也可由人工直接验收；最终停在人工交付卡点，由用户决定提交、Push、PR 和目标分支合并。
+
+页面会持续展示 PRD、澄清记录、阶段进度、Agent 输出与交付链接。典型状态流为：
+
+```text
+待选择 → 待澄清 → 待确认 → 待开发 → 开发中 → Review中 → 待合并 → 完成
+            └→ 待回答 → 待澄清                  └────→ 待合并（inline 可选 Review）
+```
+
+![需求中心](../docs/images/niuma-requirement-center.png)
+
+![管理控制台](../docs/images/niuma-management-console.png)
 
 页面和 API 按当前部署要求不设登录。连接器密钥只保存在服务端，管理 API 不回传明文；飞书设置位于 `state/integration.json`，其他连接器位于权限为 `0600` 的 `state/integrations.json`，均不进入 Git。此入口使用普通 HTTP，只适合可信局域网，不应直接暴露公网。`NIUMA_WEB_ENABLED=0` 可完全关闭。
 
@@ -30,13 +53,14 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 - **Python 3.10+**（仅 Bug LangGraph 流水线需要；普通需求仍只走 Go）
 - **Git**，以及一个目标代码仓库
 - 至少一个**可无头运行的 Agent CLI**，并已登录可用：
-  - 默认 `cursor-agent`（澄清/开发/Review 默认都用 cursor）
-  - 也支持 `claude` / `codex` / `gemini`，按需在 `.env` 或飞书里切换
+  - 需求默认使用 Cursor 澄清/开发、Gemini Review
+  - Bug 默认使用 Claude 修复、Codex Review
+  - 也支持按任务或管理设置切换到其他受支持 Agent
 - 可选：一个**飞书自建应用**（开通多维表格读写 + IM 发消息 + 长连接接收私聊），详见 [../docs/feishu-app-setup.md](../docs/feishu-app-setup.md)
 
 ---
 
-## 从零运行（克隆后四步）
+## 从零运行
 
 ### 1) 克隆 & 构建
 
@@ -44,6 +68,11 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 git clone <your-repo-url> agent-pipeline
 cd agent-pipeline/go
 GOPROXY=https://goproxy.cn,direct go build -o niuma .
+```
+
+Bug 调查/修复流程需要额外安装 Python sidecar；只使用需求流程时可以跳过：
+
+```bash
 cd ../buggraph
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
@@ -62,10 +91,9 @@ cd ../go
 
 ```bash
 cp ../.env.example ../.env
-# 编辑 ../.env，至少填这 5 个必填项：
-#   FEISHU_APP_ID / FEISHU_APP_SECRET
-#   PIPELINE_BASE_TOKEN / PIPELINE_TABLE_ID   ← 来自第 3 步的多维表格 URL
-#   PIPELINE_REPO_PATH                         ← 目标 git 仓库绝对路径
+# 编辑 ../.env，至少设置 PIPELINE_REPO_PATH；
+# 或创建 workspaces.json，配置一个以上有效工作区。
+# 飞书四项配置均为可选，本地页面和 Agent 流程不依赖飞书启动。
 ```
 
 常用可选项：
@@ -86,7 +114,7 @@ cp ../.env.example ../.env
 
 多工作区 / worktree 模式 / SCM 见 [../workspaces.example.json](../workspaces.example.json) 与 [../docs/config-reference.md](../docs/config-reference.md)。
 
-### 3) 准备飞书多维表格（Base）
+### 3) 可选：准备飞书多维表格（Base）
 
 新建一张多维表格，加好这些字段，并把表格 URL 里的 `app_token` / `table_id` 填进 `.env`
 的 `PIPELINE_BASE_TOKEN` / `PIPELINE_TABLE_ID`。字段名必须**完全一致**：
@@ -117,7 +145,7 @@ cp ../.env.example ../.env
 ./niuma
 ```
 
-看到「连上 `wss://msg-frontier.feishu.cn`」+「扫描 N 条记录」即正常。
+纯本地模式看到「数据源=本地」「Web 控制台启动」和「扫描 N 条记录」即正常。启用飞书后还会建立长连接并执行首次同步。
 
 ---
 
@@ -221,7 +249,7 @@ Bug 走独立最小链路：
 Bug 完成 ──→ 校验目标分支已包含 Bug 提交或等价补丁
 ```
 
-Bug 流水线不会自动建 PR、不会自动合并，也不会使用 inline 工作树。普通 `task` 策略下每个 Bug 使用独立交付分支；`session` 策略下每个 Bug 仍在独立临时 worktree 中执行，但 Review 通过后会串行进入共享会话分支。
+Bug 流水线默认不 push、不建 PR，且永不自动合并，也不会使用 inline 工作树；只有工作区显式开启 push/PR 时才执行对应发布动作。普通 `task` 策略下每个 Bug 使用独立交付分支；`session` 策略下每个 Bug 仍在独立临时 worktree 中执行，但 Review 通过后会串行进入共享会话分支。
 
 相似 Bug 会在页面提示；调查命中相同文件时，后来的任务保留调查结果并暂停写代码。前置任务 Review 通过后，后续任务分支会自动接到前置分支上继续，页面展示人工合并顺序。
 
