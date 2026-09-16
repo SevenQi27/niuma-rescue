@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -136,11 +137,273 @@ func (s *cursorSink) finalText() string {
 func (s *cursorSink) errorBlob() string { return strings.Join(s.errLines, "\n") }
 func (s *cursorSink) isError() bool     { return s.hasResult && s.isErr }
 
+type codexProgressEvent struct {
+	ID     string `json:"-"`
+	Kind   string `json:"kind"`
+	Title  string `json:"title"`
+	Detail string `json:"detail,omitempty"`
+	Status string `json:"status"`
+}
+
+type codexJSONSink struct {
+	finalMessages []string
+	errLines      []string
+	timeline      []codexProgressEvent
+	indices       map[string]int
+	events        int
+	phase         string
+	failed        bool
+	inputTokens   int
+	cachedTokens  int
+	outputTokens  int
+}
+
+func newCodexJSONSink() *codexJSONSink {
+	return &codexJSONSink{indices: map[string]int{}, phase: "正在启动 Codex"}
+}
+
+func (s *codexJSONSink) feed(tag, line string) {
+	if tag == "err" {
+		if text := strings.TrimSpace(line); text != "" {
+			s.errLines = append(s.errLines, text)
+		}
+		return
+	}
+	text := strings.TrimSpace(line)
+	if text == "" {
+		return
+	}
+	var event map[string]any
+	if json.Unmarshal([]byte(text), &event) != nil {
+		s.errLines = append(s.errLines, text)
+		return
+	}
+	s.events++
+	typeName, _ := event["type"].(string)
+	switch typeName {
+	case "thread.started":
+		s.phase = "Codex 已启动"
+	case "turn.started":
+		s.phase = "正在分析"
+		s.appendEvent(codexProgressEvent{Kind: "analysis", Title: "开始分析", Status: "running"})
+	case "item.started", "item.updated", "item.completed":
+		item, _ := event["item"].(map[string]any)
+		s.consumeItem(item, typeName)
+	case "turn.completed":
+		s.phase = "正在整理结果"
+		s.consumeUsage(event["usage"])
+		s.completeRunningEvents()
+	case "turn.failed", "error":
+		s.phase = "执行失败"
+		s.failed = true
+		detail := codexErrorMessage(event)
+		if detail != "" {
+			s.appendEvent(codexProgressEvent{Kind: "error", Title: "Codex 执行失败", Detail: trunc(detail, 1200), Status: "failed"})
+		}
+	}
+}
+
+func (s *codexJSONSink) consumeItem(item map[string]any, eventType string) {
+	if item == nil {
+		return
+	}
+	id, _ := item["id"].(string)
+	itemType, _ := item["type"].(string)
+	status := "running"
+	if eventType == "item.completed" {
+		status = "completed"
+	}
+	if rawStatus, _ := item["status"].(string); rawStatus == "failed" {
+		status = "failed"
+	}
+
+	progressEvent := codexProgressEvent{ID: id, Status: status}
+	switch itemType {
+	case "reasoning":
+		progressEvent.Kind = "analysis"
+		progressEvent.Title = "分析摘要"
+		progressEvent.Detail = trunc(firstString(item, "text", "summary"), 1200)
+		s.phase = "正在分析"
+	case "command_execution":
+		progressEvent.Kind = "command"
+		progressEvent.Title = "执行只读命令"
+		progressEvent.Detail = trunc(firstString(item, "command"), 1200)
+		if exitCode, ok := numberAsInt(item["exit_code"]); ok && eventType == "item.completed" {
+			progressEvent.Detail = strings.TrimSpace(progressEvent.Detail + "\n退出码 " + itoa(exitCode))
+			if exitCode != 0 {
+				progressEvent.Status = "failed"
+			}
+		}
+		s.phase = "正在检查证据"
+	case "mcp_tool_call":
+		progressEvent.Kind = "tool"
+		progressEvent.Title = "调用只读工具"
+		progressEvent.Detail = trunc(strings.TrimSpace(firstString(item, "server")+" "+firstString(item, "tool", "name")), 1200)
+		s.phase = "正在查询工具"
+	case "web_search":
+		progressEvent.Kind = "search"
+		progressEvent.Title = "搜索资料"
+		progressEvent.Detail = trunc(firstString(item, "query"), 1200)
+		s.phase = "正在搜索资料"
+	case "plan_update":
+		progressEvent.Kind = "plan"
+		progressEvent.Title = "更新计划"
+		progressEvent.Detail = trunc(firstString(item, "text", "plan"), 1200)
+		s.phase = "正在更新计划"
+	case "agent_message":
+		message := strings.TrimSpace(firstString(item, "text", "message"))
+		if message == "" {
+			return
+		}
+		progressEvent.Kind = "message"
+		progressEvent.Title = "阶段性说明"
+		progressEvent.Detail = trunc(message, 1200)
+		if eventType == "item.completed" {
+			s.finalMessages = append(s.finalMessages, message)
+		}
+		s.phase = "正在整理结果"
+	case "file_change":
+		progressEvent.Kind = "file"
+		progressEvent.Title = "检测到文件变更事件"
+		progressEvent.Detail = "问询运行在只读沙箱中，不允许写入工作区"
+	default:
+		return
+	}
+	if progressEvent.Detail == "" && eventType != "item.started" {
+		return
+	}
+	s.upsertEvent(progressEvent)
+}
+
+func (s *codexJSONSink) upsertEvent(event codexProgressEvent) {
+	if event.ID != "" {
+		if index, ok := s.indices[event.ID]; ok {
+			previous := s.timeline[index]
+			if event.Detail == "" {
+				event.Detail = previous.Detail
+			}
+			s.timeline[index] = event
+			return
+		}
+	}
+	s.appendEvent(event)
+}
+
+func (s *codexJSONSink) appendEvent(event codexProgressEvent) {
+	if len(s.timeline) >= 80 {
+		s.timeline = append([]codexProgressEvent{}, s.timeline[len(s.timeline)-79:]...)
+		s.reindex()
+	}
+	if event.ID != "" {
+		s.indices[event.ID] = len(s.timeline)
+	}
+	s.timeline = append(s.timeline, event)
+}
+
+func (s *codexJSONSink) reindex() {
+	s.indices = map[string]int{}
+	for index, event := range s.timeline {
+		if event.ID != "" {
+			s.indices[event.ID] = index
+		}
+	}
+}
+
+func (s *codexJSONSink) completeRunningEvents() {
+	for index := range s.timeline {
+		if s.timeline[index].Status == "running" {
+			s.timeline[index].Status = "completed"
+		}
+	}
+}
+
+func (s *codexJSONSink) consumeUsage(value any) {
+	usage, _ := value.(map[string]any)
+	if usage == nil {
+		return
+	}
+	s.inputTokens, _ = numberAsInt(usage["input_tokens"])
+	s.cachedTokens, _ = numberAsInt(usage["cached_input_tokens"])
+	s.outputTokens, _ = numberAsInt(usage["output_tokens"])
+}
+
+func (s *codexJSONSink) progress() map[string]any {
+	timeline := append([]codexProgressEvent(nil), s.timeline...)
+	return map[string]any{
+		"phase":         s.phase,
+		"event_count":   s.events,
+		"timeline":      timeline,
+		"input_tokens":  s.inputTokens,
+		"cached_tokens": s.cachedTokens,
+		"output_tokens": s.outputTokens,
+	}
+}
+
+func (s *codexJSONSink) finalText() string {
+	if len(s.finalMessages) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(s.finalMessages[len(s.finalMessages)-1])
+}
+
+func (s *codexJSONSink) errorBlob() string { return strings.Join(s.errLines, "\n") }
+func (s *codexJSONSink) isError() bool     { return s.failed }
+
+func firstString(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func codexErrorMessage(event map[string]any) string {
+	if message := firstString(event, "message", "error"); message != "" {
+		return message
+	}
+	if details, ok := event["error"].(map[string]any); ok {
+		return firstString(details, "message", "detail", "code")
+	}
+	return ""
+}
+
+func numberAsInt(value any) (int, bool) {
+	switch number := value.(type) {
+	case float64:
+		return int(number), true
+	case int:
+		return number, true
+	default:
+		return 0, false
+	}
+}
+
 func agentArgv(engine, sessionID string) []string {
 	return agentArgvWithAccess(engine, sessionID, false)
 }
 
 func agentArgvWithAccess(engine, sessionID string, writeAccess bool) []string {
+	if engine == codexInquiryEngine {
+		base := AgentCmds["codex"]
+		if len(base) == 0 {
+			return nil
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return nil
+		}
+		return []string{
+			base[0], "exec", "--sandbox", "read-only", "--ephemeral", "--json",
+			"--model", codexInquiryModel,
+			"-c", "model_reasoning_effort=" + strconv.Quote(codexInquiryReasoningEffort),
+			"-c", "mcp_servers.mysql-prod.command=" + strconv.Quote(executable),
+			"-c", `mcp_servers.mysql-prod.args=["mysql-readonly-mcp"]`,
+			"-c", `mcp_servers.mysql-prod.enabled_tools=["execute_sql","get_schema_info","get_table_sample"]`,
+			"-c", `mcp_servers.mysql-prod.default_tools_approval_mode="approve"`,
+			"-",
+		}
+	}
 	base, ok := AgentCmds[engine]
 	if !ok {
 		return nil
@@ -180,6 +443,15 @@ func hasStreamJSON(argv []string) bool {
 	return false
 }
 
+func hasCodexJSON(argv []string) bool {
+	for _, arg := range argv {
+		if arg == "--json" {
+			return true
+		}
+	}
+	return false
+}
+
 func scrubbedEnv() []string {
 	var out []string
 	for _, kv := range os.Environ() {
@@ -212,7 +484,11 @@ func validate(engine string, rc int, output string) AgentResult {
 		return AgentResult{OK: false, Output: engine + " 返回空输出"}
 	}
 	lower := strings.ToLower(output)
-	markers := append(append([]string{}, baseErrorMarkers...), engineErrorMarkers[engine]...)
+	markerEngine := engine
+	if engine == codexInquiryEngine {
+		markerEngine = "codex"
+	}
+	markers := append(append([]string{}, baseErrorMarkers...), engineErrorMarkers[markerEngine]...)
 	for _, m := range markers {
 		if strings.Contains(lower, m) {
 			return AgentResult{OK: false, Output: engine + " 输出疑似错误: " + trunc(output, 300)}
@@ -337,7 +613,9 @@ func runAgentOnce(engine, prompt, cwd string, timeout int, sessionID string, wri
 
 	var sk sink
 	var outLines, errLines []string
-	if hasStreamJSON(argv) {
+	if hasCodexJSON(argv) {
+		sk = newCodexJSONSink()
+	} else if hasStreamJSON(argv) {
 		sk = &cursorSink{} // stream-json 事件解析
 	} else {
 		sk = &rawSink{} // 裸文本（cursor 用 composer-2.5/text 时走这）
@@ -365,6 +643,11 @@ loop:
 				outLines = append(outLines, ln.line)
 			}
 			sk.feed(ln.tag, ln.line)
+			if onProgress != nil && engine == codexInquiryEngine {
+				p := sk.progress()
+				p["elapsed"] = int(time.Since(start).Seconds())
+				onProgress(p)
+			}
 		case <-ticker.C:
 			now := time.Now()
 			if now.Sub(start).Seconds() > float64(timeout) {
@@ -384,6 +667,11 @@ loop:
 		}
 	}
 	duration := time.Since(start).Seconds()
+	if onProgress != nil {
+		p := sk.progress()
+		p["elapsed"] = int(duration)
+		onProgress(p)
+	}
 	if engine == "codex" {
 		if detected := extractCodexSessionID(errLines, outLines); detected != "" {
 			resolvedSessionID = detected

@@ -17,6 +17,24 @@ cd go
 http://localhost:8787
 ```
 
+独立流程问询页：
+
+```text
+http://localhost:8787/inquiry
+```
+
+问询只使用 Codex，并在后端强制要求唯一的纯数字
+`procId` 查询参数。它以只读、临时会话模式异步执行；未通过参数校验的请求不会启动 Codex。
+问询记录持久化在 `STATE_DIR/inquiries.json`，页面展示最近 200 条。刷新页面不会丢失记录；
+服务重启时仍未完成的问询会保留下来并明确标记为失败，方便重新提交。
+
+问询中的 `mysql-prod` 会被替换为 Niuma 内置的生产只读 MCP，并只对这个受限包装器
+预先授权。它只接受单条 `SELECT`、`SHOW`、`DESCRIBE`、`EXPLAIN` 或只读 `WITH`，
+拒绝 DML、DDL、锁、文件访问和多语句，并在 MySQL `READ ONLY` 事务中执行。
+不要把全局 `mysql-prod` 的通用 `execute_sql` 改成自动批准；原 MCP 支持并自动提交写 SQL。
+只读包装器会先使用 `PATH` 中的 `mysql`，再探测 Homebrew Intel/Apple Silicon 和常见系统路径；
+特殊安装位置可通过 `MYSQL_CLIENT_PATH` 指定。
+
 管理控制台可以完成：
 
 - 查看任务总数、状态、当前运行和服务运行时间；
@@ -28,6 +46,7 @@ http://localhost:8787
 - 管理禅道、Jira、Slack 连接器并查看最近事件。
 
 当前页面没有身份认证，只允许部署在可信局域网。
+`procId` 只限定问询对象，并不替代身份认证。
 
 ## 日志
 

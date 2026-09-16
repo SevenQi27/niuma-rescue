@@ -15,6 +15,10 @@ the agent pipeline.
 
 - **Local task center** — create, edit, filter and archive Bug and requirement
   tasks, upload supporting files and inspect live agent output.
+- **Read-only process inquiry** — ask Codex about one explicitly supplied
+  `procId` from a separate page; the backend rejects missing, empty,
+  non-numeric or duplicate IDs before starting the Agent, then streams public
+  reasoning summaries, read-only tool activity and progress to the browser.
 - **Requirement workflow** — intake → AI clarification → human PRD confirmation
   → development → independent review → human delivery.
 - **Bug workflow** — investigation → affected-file registration → minimal fix →
@@ -112,7 +116,23 @@ GOPROXY=https://goproxy.cn,direct go build -o niuma .
 ./niuma
 ```
 
-Open `http://localhost:8787`. This local-only setup does not require Feishu.
+Open `http://localhost:8787`. The separate read-only inquiry page is available
+at `http://localhost:8787/inquiry`. This local-only setup does not require
+Feishu.
+
+Inquiry jobs are retained in `STATE_DIR/inquiries.json` (the latest 200 records).
+Refreshing the page keeps both running and completed jobs visible. If the service
+restarts during a query, that record is preserved and marked failed so it can be
+resubmitted explicitly.
+
+Inquiry runs pin Codex to `gpt-5.6-sol` with `xhigh` reasoning independently of
+the user's global Codex model selection.
+
+For production evidence, inquiry runs replace the configured `mysql-prod` server
+with Niuma's built-in read-only MCP wrapper. The wrapper pre-approves only its
+restricted tools, rejects multi-statement SQL, DML, DDL, locks and file operations,
+and executes accepted queries inside a MySQL `READ ONLY` transaction. The user's
+global Codex MCP approval settings are not changed.
 
 To enable the Bug workflow:
 
@@ -138,6 +158,8 @@ Detailed setup and operations:
 - The web console currently has no authentication and uses plain HTTP. Bind it
   only to a trusted machine or LAN; do not expose port `8787` directly to the
   public internet.
+- `procId` is a mandatory inquiry scope, not user authentication. The inquiry
+  API still belongs behind the same trusted-LAN boundary.
 - Connector secrets and runtime databases live under the ignored `state/`
   directory. APIs return masked secret metadata rather than saved values.
 - Niuma-created task and session branches do not track the baseline branch.

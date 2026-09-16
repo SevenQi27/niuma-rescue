@@ -15,10 +15,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
-//go:embed web/index.html web/app.css web/app.js
+//go:embed web/index.html web/app.css web/app.js web/inquiry.html web/inquiry.css web/inquiry.js
 var webAssets embed.FS
 
 type bugRecordStore interface {
@@ -28,11 +29,14 @@ type bugRecordStore interface {
 }
 
 type bugConsole struct {
-	fs       bugRecordStore
-	app      *App
-	stateDir string
-	fire     func()
-	clearRun func(string)
+	fs          bugRecordStore
+	app         *App
+	stateDir    string
+	fire        func()
+	clearRun    func(string)
+	inquiryOnce sync.Once
+	inquiries   *inquiryService
+	inquiryRun  inquiryRunFunc
 }
 
 type webBugImage struct {
@@ -117,9 +121,14 @@ func displayWebAddr(addr string) string {
 func (c *bugConsole) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", c.serveIndex)
+	mux.HandleFunc("/inquiry", c.serveInquiry)
 	mux.HandleFunc("/assets/app.css", c.serveCSS)
 	mux.HandleFunc("/assets/app.js", c.serveJS)
+	mux.HandleFunc("/assets/inquiry.css", c.serveInquiryCSS)
+	mux.HandleFunc("/assets/inquiry.js", c.serveInquiryJS)
 	mux.HandleFunc("/api/meta", c.handleMeta)
+	mux.HandleFunc("/api/inquiries", c.handleInquiries)
+	mux.HandleFunc("/api/inquiries/", c.handleInquiry)
 	mux.HandleFunc("/api/tasks", c.handleTasks)
 	mux.HandleFunc("/api/tasks/", c.handleTask)
 	mux.HandleFunc("/api/bugs", c.handleBugs)
@@ -154,6 +163,14 @@ func (c *bugConsole) serveIndex(w http.ResponseWriter, r *http.Request) {
 	c.serveAsset(w, "web/index.html", "text/html; charset=utf-8")
 }
 
+func (c *bugConsole) serveInquiry(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/inquiry" || r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	c.serveAsset(w, "web/inquiry.html", "text/html; charset=utf-8")
+}
+
 func (c *bugConsole) serveCSS(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -168,6 +185,22 @@ func (c *bugConsole) serveJS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.serveAsset(w, "web/app.js", "text/javascript; charset=utf-8")
+}
+
+func (c *bugConsole) serveInquiryCSS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	c.serveAsset(w, "web/inquiry.css", "text/css; charset=utf-8")
+}
+
+func (c *bugConsole) serveInquiryJS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	c.serveAsset(w, "web/inquiry.js", "text/javascript; charset=utf-8")
 }
 
 func (c *bugConsole) serveAsset(w http.ResponseWriter, name, contentType string) {

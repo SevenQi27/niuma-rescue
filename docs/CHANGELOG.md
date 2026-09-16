@@ -23,6 +23,10 @@
 
 - Made local SQLite the task source of truth; Web and Agent workflows run without Feishu.
 - Added the Bug/requirement task center, attachments, live pipeline output, filtering, editing and archive operations.
+- Added a standalone asynchronous process-inquiry page backed by Codex, with a server-side `procId` hard gate, read-only ephemeral execution and a live timeline of public Codex JSONL events.
+- Persist inquiry history across browser refreshes and service restarts; interrupted jobs are retained as explicit failures instead of disappearing.
+- Added a production MySQL read-only MCP wrapper for unattended inquiries, allowing live database evidence without interactive approval while rejecting write-capable SQL at the service boundary.
+- Resolve the MySQL client from `MYSQL_CLIENT_PATH`, `PATH`, or common Homebrew/system locations so launchd services do not depend on an interactive shell PATH.
 - Added the management console for task recovery, pipeline defaults, workspaces, development sessions and optional integrations.
 - Made Feishu an optional runtime connector with enable/disable, connection testing, immediate sync and masked secrets.
 - Added ZenTao/Jira validated and idempotent Webhook ingestion plus Slack connection configuration.
@@ -36,6 +40,7 @@
 ### Known boundaries
 
 - The Web console has no authentication and must remain on a trusted LAN.
+- The inquiry `procId` gate scopes a query but is not authentication.
 - An empty workspace `test_cmd` is recorded as skipped; it is not executable acceptance evidence.
 - ZenTao/Jira events are validated and queued but are not yet converted automatically into full tasks or written back to the source system.
 - Slack Socket Mode consumption is not implemented.

@@ -17,6 +17,7 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 - 在 Bug 卡片内展开 AI 执行过程，实时查看各阶段状态及 Agent 调查、修复、验证和 Review 结果。
 - 在需求页签完成录入、AI 澄清、人工确认、开始开发、独立 Review 和人工合并，并查看 PRD 与阶段进度。
 - 打开 `/manage` 管理任务停止/重试/完成/归档、飞书/禅道/Jira/Slack 连接、默认 Agent 和工作区。
+- 打开 `/inquiry` 进入独立的流程问询页，只读查询一个明确传入的 `procId`。
 
 ![任务中心](../docs/images/niuma-task-center.png)
 
@@ -40,6 +41,29 @@ listener + dispatcher 合并为一个 Go 常驻进程，goroutine 并发；仅 B
 ![需求中心](../docs/images/niuma-requirement-center.png)
 
 ![管理控制台](../docs/images/niuma-management-console.png)
+
+### 流程问询（Codex 只读）
+
+`/inquiry` 是独立于 Bug/需求流水线的问询入口。它只使用 Codex 调查一个流程实例，不创建开发任务，也不修改代码：
+
+1. 页面要求完整填写 `procId=<纯数字流程实例ID>`、工作区和问题；
+2. 浏览器发起 `POST /api/inquiries?procId=<流程实例ID>`；
+3. 后端在读取请求正文、创建任务或启动 Codex 之前再次校验查询参数；
+4. 缺少、空值、非数字、大小写不符或重复的 `procId` 一律返回 `400`，正文中的 `procId` 不能绕过门禁；
+5. 合法问询进入异步队列，页面实时展示 Codex 公开输出的分析摘要、只读命令、工具调用、阶段和耗时；
+6. Codex 固定使用 `gpt-5.6-sol`、`xhigh` 推理强度，并以 `--sandbox read-only --ephemeral --json` 运行；提示词也限制为只读调查和当前 `procId`。
+
+页面展示的是 Codex JSONL 事件流中的公开执行信息，不展示隐藏思维链。问询结束后，执行过程和最终答案会一起保留在当前服务进程内，便于核对答案依据。
+
+接口示例：
+
+```bash
+curl -X POST 'http://localhost:8787/api/inquiries?procId=1538882505824796672' \
+  -H 'Content-Type: application/json' \
+  -d '{"workspace":"demo","question":"当前停在哪个节点？请列出证据。"}'
+```
+
+问询默认最多运行 900 秒，可通过 `PIPELINE_TIMEOUT_INQUIRY` 调整。同一时间只执行一条，最多保留 8 条排队中/运行中的请求。`procId` 是强制查询范围，不是用户身份认证；页面仍然只能部署在可信局域网。
 
 页面和 API 按当前部署要求不设登录。连接器密钥只保存在服务端，管理 API 不回传明文；飞书设置位于 `state/integration.json`，其他连接器位于权限为 `0600` 的 `state/integrations.json`，均不进入 Git。此入口使用普通 HTTP，只适合可信局域网，不应直接暴露公网。`NIUMA_WEB_ENABLED=0` 可完全关闭。
 
@@ -108,6 +132,7 @@ cp ../.env.example ../.env
 | `PIPELINE_TEST_CMD` | 空 | 验收门 shell，exit 0 视为通过；空则不跑 |
 | `PIPELINE_POLL_INTERVAL` | `900` | 兜底轮询秒数（主要靠事件驱动） |
 | `PIPELINE_AGENT_RUNS_KEEP` | `200` | `state/agent-runs/` 保留最近 N 次调用产物 |
+| `PIPELINE_TIMEOUT_INQUIRY` | `900` | 单次 Codex 只读流程问询超时秒数 |
 | `PIPELINE_ENGINE_BUG_FIX` / `_BUG_REVIEW` | `claude` / `codex` | Bug 修复与独立 Review Agent（可选 Claude/Codex/Cursor，必须不同） |
 | `PIPELINE_BUG_REPAIR_LIMIT` | `2` | 测试失败或 Review FAIL 后最多返修总轮数 |
 | `PIPELINE_BUG_GRAPH_PYTHON` | 自动发现 `buggraph/.venv` | LangGraph Python 解释器 |

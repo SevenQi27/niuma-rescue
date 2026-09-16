@@ -49,6 +49,7 @@ Web 当前无鉴权，不能直接暴露公网。
 | `PIPELINE_TIMEOUT_CLARIFY` | `600` | 澄清超时秒数 |
 | `PIPELINE_TIMEOUT_CODE` | `1800` | 开发/测试命令超时秒数 |
 | `PIPELINE_TIMEOUT_REVIEW` | `900` | Review 超时秒数 |
+| `PIPELINE_TIMEOUT_INQUIRY` | `900` | 流程问询页面的 Codex 单次查询超时秒数 |
 | `PIPELINE_TIMEOUT_BUG` | `10800` | 完整 BugGraph 超时秒数 |
 | `PIPELINE_BUG_REPAIR_LIMIT` | `2` | 测试或 Review 失败后的最大返修轮数 |
 | `PIPELINE_AGENT_RETRIES` | `2` | 单次 Agent 调用重试次数 |

@@ -106,14 +106,14 @@ type Config struct {
 	EngineClarify, EngineCode, EngineReview string
 	EngineBugFix, EngineBugReview           string
 
-	TimeoutClarify, TimeoutCode, TimeoutReview          int
-	TimeoutBug, BugRepairLimit                          int
-	Inactivity, ProgressInterval, StaleAfter, RetryBase int
-	FailureLimit, PollInterval, MaxConcurrency          int
-	AgentRetries, AgentRunsKeep                         int
-	SetupGate, GateRelative, PushEnabled, PREnabled     bool
-	WebEnabled, FeishuEnabled                           bool
-	BatchDevelop, BatchClarify, InlineSkipGate          bool
+	TimeoutClarify, TimeoutCode, TimeoutReview, TimeoutInquiry int
+	TimeoutBug, BugRepairLimit                                 int
+	Inactivity, ProgressInterval, StaleAfter, RetryBase        int
+	FailureLimit, PollInterval, MaxConcurrency                 int
+	AgentRetries, AgentRunsKeep                                int
+	SetupGate, GateRelative, PushEnabled, PREnabled            bool
+	WebEnabled, FeishuEnabled                                  bool
+	BatchDevelop, BatchClarify, InlineSkipGate                 bool
 
 	Root, StateDir, WorktreeBase, WorkspacesFile string
 	BugGraphPython, BugGraphDir                  string
@@ -145,6 +145,7 @@ func loadConfig() *Config {
 		TimeoutClarify:   envInt("PIPELINE_TIMEOUT_CLARIFY", 600),
 		TimeoutCode:      envInt("PIPELINE_TIMEOUT_CODE", 1800),
 		TimeoutReview:    envInt("PIPELINE_TIMEOUT_REVIEW", 900),
+		TimeoutInquiry:   envInt("PIPELINE_TIMEOUT_INQUIRY", 900),
 		TimeoutBug:       envInt("PIPELINE_TIMEOUT_BUG", 10800),
 		BugRepairLimit:   envInt("PIPELINE_BUG_REPAIR_LIMIT", 2),
 		Inactivity:       envInt("PIPELINE_INACTIVITY_TIMEOUT", 120),
@@ -211,6 +212,9 @@ func (c *Config) agentTimeout() int {
 	}
 	if c.TimeoutBug > m {
 		m = c.TimeoutBug
+	}
+	if c.TimeoutInquiry > m {
+		m = c.TimeoutInquiry
 	}
 	return m
 }

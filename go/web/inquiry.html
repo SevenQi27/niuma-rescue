@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#0f766e">
+  <title>Niuma 流程问询</title>
+  <meta name="description" content="使用 Codex 对指定 procId 进行只读流程问询">
+  <link rel="stylesheet" href="/assets/inquiry.css">
+  <script src="/assets/inquiry.js" defer></script>
+</head>
+<body>
+  <header class="inquiry-topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark">N</span>
+      <span><strong>Niuma</strong><small>流程问询</small></span>
+    </a>
+    <div class="topbar-actions">
+      <span class="readonly-pill"><i></i> Codex · 只读</span>
+      <a class="back-link" href="/">返回任务中心</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="inquiry-grid">
+      <form class="question-card" id="inquiryForm">
+        <div class="section-heading">
+          <h1>发起问询</h1>
+        </div>
+
+        <label for="procToken">流程实例凭证</label>
+        <input id="procToken" name="procToken" autocomplete="off" spellcheck="false" placeholder="procId=1538882505824796672" required>
+        <div class="gate-state" id="gateState"><i></i><span>必须完整填写 <code>procId=纯数字</code></span></div>
+
+        <label for="workspace">查询工作区</label>
+        <select id="workspace" name="workspace" required><option value="">正在读取工作区…</option></select>
+
+        <label for="question">想查什么</label>
+        <textarea id="question" name="question" rows="8" maxlength="12000" placeholder="例如：这个流程当前停在哪个节点？结合代码和可用数据说明原因，并列出关键证据。" required></textarea>
+        <div class="question-meta"><span>最多 12000 字</span><span id="questionCount">0 / 12000</span></div>
+
+        <p class="form-error" id="formError" role="alert"></p>
+        <button class="submit-button" id="submitButton" type="submit" disabled><span>交给 Codex 查询</span><b>→</b></button>
+      </form>
+
+      <section class="answer-card" aria-live="polite">
+        <div class="section-heading">
+          <h2>问询结果</h2>
+          <span class="status-badge" id="jobStatus">尚未开始</span>
+        </div>
+
+        <div class="answer-empty" id="answerEmpty">
+          <span>◎</span>
+          <h3>暂无问询结果</h3>
+        </div>
+
+        <div class="answer-running" id="answerRunning" hidden>
+          <div class="pulse"><i></i><i></i><i></i></div>
+          <div><h3 id="runningTitle">已进入查询队列</h3><p id="runningMeta">等待 Codex 开始执行</p></div>
+        </div>
+
+        <div class="activity-panel" id="activityPanel" hidden>
+          <div class="activity-heading"><b>执行过程</b><span id="activityMeta"></span></div>
+          <ol class="activity-list" id="activityList"></ol>
+        </div>
+
+        <div class="answer-result" id="answerResult" hidden>
+          <div class="result-meta" id="resultMeta"></div>
+          <pre id="resultOutput"></pre>
+          <button class="copy-button" id="copyButton" type="button">复制结果</button>
+        </div>
+      </section>
+    </section>
+
+    <section class="history-card">
+      <div class="section-heading history-heading">
+        <div><h2>问询记录</h2><span id="historyCount"></span></div>
+        <button class="refresh-button" id="refreshHistory" type="button">刷新</button>
+      </div>
+      <div class="history-list" id="historyList"><p class="history-empty">正在读取…</p></div>
+    </section>
+  </main>
+
+  <footer>只读查询 · 必须提供有效的 procId</footer>
+</body>
+</html>

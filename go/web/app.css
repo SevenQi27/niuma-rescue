@@ -102,7 +102,7 @@ fieldset { border: 0; padding: 0; margin: 0; }
 .agent-stage-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .agent-stage-grid label { margin-top: 0; }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
-.button { border: 0; border-radius: 13px; padding: 11px 16px; font-weight: 800; color: var(--ink); background: white; transition: .18s transform, .18s box-shadow, .18s background; }
+.button { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 13px; padding: 11px 16px; color: var(--ink); background: white; font-weight: 800; text-decoration: none; transition: .18s transform, .18s box-shadow, .18s background; }
 .button:hover { transform: translateY(-1px); }
 .button:disabled { cursor: wait; opacity: .55; transform: none; }
 .button.primary { color: white; background: var(--purple); box-shadow: 0 7px 18px rgba(107,56,212,.2); }
